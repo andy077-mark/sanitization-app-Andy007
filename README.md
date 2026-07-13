@@ -118,6 +118,6 @@ SanitizationApp/
 
 ## Support
 
-Developed by [Softadom](https://softadom.com).
+Developed by Andy.
 
-Contact **contact@softadom.com** for assistance.
+Contact **Andy** for assistance.
