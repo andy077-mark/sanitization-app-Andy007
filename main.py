@@ -3,7 +3,8 @@
 Sanitization App v1.0
 """
 import os, re, uuid, shutil, tempfile, logging, subprocess, argparse, sys, io
-import platform, stat, urllib.request, tarfile
+import platform, stat, urllib.request, tarfile, zipfile
+
 from datetime import datetime, timedelta
 from threading import Semaphore, Thread, Lock
 from pathlib import Path
@@ -15,9 +16,15 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 # --- Config ---
-MAX_UPLOAD_MB = 2048        # Maximum upload file size in MB (2GB)
-MAX_THREADS   = 15          # Maximum concurrent processing threads
-MAX_FILES     = 10000       # Maximum files allowed per upload
+def _on_pythonanywhere():
+    """True when running on PythonAnywhere (free or paid)."""
+    return bool(os.environ.get('PYTHONANYWHERE_DOMAIN') or os.environ.get('PYTHONANYWHERE_SITE'))
+
+
+# Local/dev default 2 GB; PythonAnywhere free cannot accept that over HTTP.
+MAX_UPLOAD_MB = 100 if _on_pythonanywhere() else 2048
+MAX_THREADS   = 4 if _on_pythonanywhere() else 15
+MAX_FILES     = 100 if _on_pythonanywhere() else 10000
 PURGE_DAYS    = 1           # Retention days for uploads/logs/outputs/UUIDs
 LARGE_FILE_MB = 50          # Use line-by-line sanitization above this size
 ARCHIVE_EXTS = {
@@ -39,6 +46,13 @@ TEMP   = BASE / 'temp'
 TOOLS  = BASE / 'tools' / '7zip'
 for d in (UPLOAD, OUTPUT, LOGS, TEMP):
     d.mkdir(exist_ok=True)
+
+
+def max_upload_label():
+    """Human-readable upload size for UI (e.g. '100 MB' or '2 GB')."""
+    if MAX_UPLOAD_MB >= 1024 and MAX_UPLOAD_MB % 1024 == 0:
+        return f"{MAX_UPLOAD_MB // 1024} GB"
+    return f"{MAX_UPLOAD_MB} MB"
 
 SEVEN_ZIP_EXE = None
 SEVEN_ZIP_VERSION = '2409'
@@ -342,6 +356,9 @@ def ensure_7zip(verbose=False):
     """Ensure 7-Zip is available; auto-install if missing."""
     global SEVEN_ZIP_EXE
 
+    if SEVEN_ZIP_EXE and Path(SEVEN_ZIP_EXE).exists():
+        return Path(SEVEN_ZIP_EXE)
+
     if verbose:
         print("", flush=True)
         print("=" * 54, flush=True)
@@ -374,6 +391,7 @@ def ensure_7zip(verbose=False):
     system = platform.system()
     exe = None
     method = None
+    on_pa = _on_pythonanywhere()
 
     try:
         if system == 'Windows':
@@ -386,9 +404,22 @@ def ensure_7zip(verbose=False):
         elif system == 'Darwin':
             method = ''
             exe = False
+        elif on_pa or (system == 'Linux' and not _is_ubuntu()):
+            # PythonAnywhere free has no sudo; use portable 7-Zip first.
+            method = 'portable Linux download (no admin)'
+            exe = _install_7zip_portable_linux(verbose=verbose)
+            if not exe and shutil.which('apt-get') and not on_pa:
+                method = 'apt (p7zip-full)'
+                exe = _install_7zip_apt(verbose=verbose)
+            if not exe and not on_pa:
+                method = 'dnf/yum (p7zip)'
+                exe = _install_7zip_dnf(verbose=verbose)
         elif _is_ubuntu():
             method = 'apt (p7zip-full)'
             exe = _install_7zip_apt(verbose=verbose)
+            if not exe:
+                method = 'portable Linux download (no admin)'
+                exe = _install_7zip_portable_linux(verbose=verbose)
         else:
             method = 'portable Linux download (no admin)'
             exe = _install_7zip_portable_linux(verbose=verbose)
@@ -697,16 +728,38 @@ def safe_rename_in_dir(path, used_names):
 
 
 def extract_archive(upload_path, tempdir):
-    """Extract an archive to a temporary directory using 7z."""
+    """Extract an archive to a temporary directory using 7z, with stdlib fallback."""
+    upload_path = Path(upload_path)
+    tempdir = Path(tempdir)
+    tempdir.mkdir(parents=True, exist_ok=True)
+
     exe = get_7z_exe()
-    if not exe:
-        logging.error("7-Zip is required for archive extraction but is not installed.")
+    if exe:
+        subprocess.run(
+            [str(exe), 'x', str(upload_path), f'-o{tempdir}', '-y'],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         return
-    subprocess.run(
-        [str(exe), 'x', str(upload_path), f'-o{tempdir}', '-y'],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+
+    # Fallback for hosts without 7-Zip (e.g. PythonAnywhere free outbound limits)
+    lower = upload_path.name.lower()
+    try:
+        if lower.endswith('.zip'):
+            with zipfile.ZipFile(upload_path, 'r') as zf:
+                zf.extractall(tempdir)
+            return
+        if lower.endswith(('.tar', '.tar.gz', '.tgz', '.tar.bz2', '.tbz2', '.tar.xz')):
+            with tarfile.open(upload_path, 'r:*') as tf:
+                tf.extractall(tempdir)
+            return
+        shutil.unpack_archive(str(upload_path), str(tempdir))
+        return
+    except Exception as e:
+        logging.error(
+            "Archive extraction failed (no 7-Zip and stdlib fallback failed) for %s: %s",
+            upload_path, e,
+        )
 
 
 def sanitize_tree(root):
@@ -882,6 +935,7 @@ def index():
         html,
         max_mb=MAX_UPLOAD_MB,
         max_files=MAX_FILES,
+        max_label=max_upload_label(),
         year=datetime.now().year,
     )
 
@@ -907,6 +961,7 @@ def logo():
 @app.route('/upload', methods=['POST'])
 def upload():
     """Handle upload request, save files and start processing thread."""
+    ensure_7zip(verbose=False)
     purge_old()
     files = request.files.getlist('file')
     if not files or len(files) > MAX_FILES:

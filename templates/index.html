@@ -507,7 +507,7 @@
                     <div class="info-grid">
                         <div class="info-card">
                             <h3>Max upload size</h3>
-                            <p>{{ max_mb }} MB (2 GB) per file</p>
+                            <p>{{ max_label }} per file</p>
                         </div>
                         <div class="info-card">
                             <h3>Files per batch</h3>
@@ -647,7 +647,7 @@
                         <li>Do <strong>not</strong> close or refresh the browser while a file is processing</li>
                         <li>Note the <strong>Job ID</strong> shown after upload — it can be used to check status later</li>
                         <li>Large files (over 50 MB) are processed line-by-line to save memory</li>
-                        <li>If upload fails with "file too large", the limit is 2 GB per file</li>
+                        <li>If upload fails with "file too large", the limit is {{ max_label }} per file</li>
                         <li>Archive processing requires 7-Zip — installed automatically on first start (Ubuntu: via apt; macOS: via Homebrew)</li>
                     </ul>
                 </div>
@@ -711,7 +711,7 @@
                     them here<br />
                     <span style="font-size: 0.88rem"
                         >Up to {{ max_files }} files · max
-                        {{ max_mb }} MB (2&nbsp;GB) each</span
+                        {{ max_label }} each</span
                     >
                 </div>
                 <input
