@@ -16,6 +16,7 @@ from . import rules as rules_module
 from .sanitize import (
     archive_stem,
     audit_add,
+    classify_rule,
     extract_archive,
     get_archive_ext,
     is_archive_name,
@@ -26,6 +27,36 @@ from .sanitize import (
 )
 
 
+def _keyword_map(rules: list[str] | None) -> dict[str, list[str]]:
+    """Map audit match types to the configured rules/keywords that produced them.
+
+    The report intentionally shows the configured rule text exactly as entered.
+    It never attempts to reconstruct the original matched value from sanitized data.
+    """
+    mapping: dict[str, list[str]] = {}
+    for idx, rule in enumerate(rules or [], 1):
+        kind = classify_rule(rule, idx)
+        mapping.setdefault(kind, []).append(rule)
+    return mapping
+
+
+def _keywords_for_match(match_type: str, mapping: dict[str, list[str]]) -> str:
+    """Return configured keyword/rule text for one audit match type."""
+    base_type = str(match_type or "")
+    if ": " in base_type:
+        base_type = base_type.split(": ", 1)[1]
+
+    if base_type == "Non-ASCII Character":
+        return "Non-ASCII Character"
+    if base_type == "Filename Format":
+        return "Invalid filename character"
+
+    keywords = mapping.get(base_type, [])
+    if keywords:
+        return " | ".join(keywords)
+    return base_type
+
+
 def create_audit_report(
     job_id: str,
     stats: list[dict],
@@ -34,8 +65,13 @@ def create_audit_report(
     duration: float,
     status: str = "Done",
     error: str | None = None,
+    rules: list[str] | None = None,
 ) -> Path:
-    """Create a share-safe XLSX audit report. Original sensitive values are never included."""
+    """Create the XLSX audit report with configured keywords shown unsanitized.
+
+    Sanitized output files remain sanitized. The Keywords column contains only
+    the configured rule/keyword text, not a reconstructed original matched value.
+    """
     import openpyxl
     from openpyxl.styles import Font, PatternFill
 
@@ -56,8 +92,9 @@ def create_audit_report(
     for item in stats:
         ws.append([item.get("file", ""), item.get("replacements", 0), item.get("duration", 0)])
 
+    keyword_map = _keyword_map(rules)
     audit_ws = wb.create_sheet("Audit")
-    audit_ws.append(["File Name", "Match Type", "Occurrences", "Location", "Safe Example"])
+    audit_ws.append(["File Name", "Match Type", "Occurrences", "Location", "Keywords"])
     for item in sorted(audit.values(), key=lambda x: (x["file"], x["match_type"])):
         audit_ws.append(
             [
@@ -65,7 +102,7 @@ def create_audit_report(
                 item["match_type"],
                 item["occurrences"],
                 item["location"],
-                item["safe_example"],
+                _keywords_for_match(item["match_type"], keyword_map),
             ]
         )
     if not audit:
@@ -211,7 +248,14 @@ def process_file(
         _session_set(job_id, progress=85, current_file="Generating audit report")
         report_started = time.perf_counter()
         duration_so_far = (datetime.now() - started).total_seconds()
-        report = create_audit_report(job_id, stats, audit, total_replacements, duration_so_far)
+        report = create_audit_report(
+            job_id,
+            stats,
+            audit,
+            total_replacements,
+            duration_so_far,
+            rules=active_rules,
+        )
         report_elapsed = time.perf_counter() - report_started
 
         _session_set(job_id, progress=92, current_file="Packaging sanitized outputs")
