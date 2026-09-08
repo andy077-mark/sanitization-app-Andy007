@@ -1,0 +1,37 @@
+[Unit]
+Description=SOC Data Sanitization Platform
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=sanitizer
+Group=sanitizer
+WorkingDirectory=/opt/sanitization-app
+EnvironmentFile=-/etc/sanitization-app/sanitization.env
+Environment=SANIT_REQUIRE_ADMIN=1
+UMask=0077
+
+ExecStartPre=/opt/sanitization-app/.venv/bin/python /opt/sanitization-app/scripts/verify_environment.py
+ExecStart=/opt/sanitization-app/.venv/bin/gunicorn --config /opt/sanitization-app/gunicorn.conf.py wsgi:application
+
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=60s
+TimeoutStopSec=45s
+KillSignal=SIGTERM
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=full
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/opt/sanitization-app/uploads /opt/sanitization-app/outputs /opt/sanitization-app/logs /opt/sanitization-app/temp /opt/sanitization-app/data /opt/sanitization-app/certs
+
+[Install]
+WantedBy=multi-user.target
