@@ -1,6 +1,6 @@
 # SOC Data Sanitization Platform v2.1
 
-An offline-first SOC utility for sanitizing sensitive information before logs, spreadsheets, evidence files or archives are shared. Matched content is replaced with `X` characters while the application produces a sanitized output package and a safe Excel audit report.
+An offline-first SOC utility for sanitizing sensitive information before logs, spreadsheets, evidence files or archives are shared. Matched content is replaced with `X` characters while the application produces a sanitized output and a separate Excel audit report.
 
 ## v2.1 Highlights
 
@@ -14,7 +14,11 @@ An offline-first SOC utility for sanitizing sensitive information before logs, s
 - Persistent server-side job history using SQLite (`data/jobs.db`)
 - Job creator recorded in persistent history
 - Reliable `Queued`, `Processing`, `Done` and `Failed` states
-- Sanitized ZIP package and Excel audit report per job
+- Direct sanitized download for a single file selected directly
+- ZIP package for folder and multi-file batch jobs
+- Nested folder structure preserved inside batch packages
+- Separate Excel audit report for every successful job
+- Excel Audit sheet shows the configured **Keywords** / rule text that triggered the match
 - Archive traversal/symlink/size/count/depth protections
 - No runtime dependency or 7-Zip downloads
 - Pinned runtime dependencies for repeatable offline installs
@@ -30,7 +34,7 @@ An offline-first SOC utility for sanitizing sensitive information before logs, s
 - Sanitize files/folders/archives
 - Monitor jobs
 - View history
-- Download sanitized packages and audit reports
+- Download sanitized outputs and Excel audit reports
 - View active rule count
 
 ### Administrator
@@ -123,24 +127,92 @@ The configuration refuses a worker count above 1 until job execution is moved to
 
 Nested archives are processed up to the configured depth limit.
 
-## Output
+## Output behavior
 
-Each successful job creates:
+The application chooses the output mode based on how the user selected the data.
+
+### Single file selected directly
+
+A single file selected with **Browse Files** is returned directly. It is not unnecessarily wrapped in a ZIP.
+
+Example:
 
 ```text
-Sanitized_Package_<job_id>.zip
+Input:
+security.log
+
+Outputs:
+security_SANITIZED.log
 Sanitization_Report_<job_id>.xlsx
 ```
 
-The Excel report includes:
+The direct output keeps the original file type where supported. A directly selected archive is returned as the sanitized/repacked archive with `_SANITIZED` added to the filename.
 
-- File Name
-- Match Type
-- Occurrences
-- Location (line/cell/path where available)
-- Safe Example after sanitization
+### Folder or multi-file batch
 
-Original sensitive match values are not intentionally reproduced in the report.
+A folder upload or a job containing multiple files is returned as one ZIP package so the original relative folder structure can be preserved.
+
+Example input:
+
+```text
+Case-01/
+├── notes.txt
+└── Logs/
+    ├── firewall.log
+    └── Windows/
+        └── Security/
+            └── security.log
+```
+
+Example output:
+
+```text
+Sanitized_Package_<job_id>.zip
+├── Sanitized_Files/
+│   └── Case-01/
+│       ├── notes.txt
+│       └── Logs/
+│           ├── firewall.log
+│           └── Windows/
+│               └── Security/
+│                   └── security.log
+└── Sanitization_Report_<job_id>.xlsx
+```
+
+The Excel report is also available as a separate download.
+
+If **Browse Folder** is used, the job remains a folder/batch job even when the selected folder happens to contain only one file. This preserves the folder context instead of silently converting the result to a standalone file.
+
+Completely empty folders cannot be preserved by normal browser folder upload because browsers provide files and their relative paths rather than standalone empty-directory objects.
+
+## Excel audit report
+
+Every successful job creates:
+
+```text
+Sanitization_Report_<job_id>.xlsx
+```
+
+The workbook contains **Summary** and **Audit** sheets.
+
+The Audit sheet contains:
+
+- **File Name**
+- **Match Type**
+- **Occurrences**
+- **Location** — line, cell, filename or path where available
+- **Keywords** — the configured Rules Library keyword/regular expression that produced the match
+
+Example:
+
+| File Name | Match Type | Occurrences | Location | Keywords |
+|---|---|---:|---|---|
+| security.log | Custom Rule 1 | 4 | Line 23 | `andy` |
+| security.log | IPv4 Address | 18 | Line 31 | `\b(?:\d{1,3}\.){3}\d{1,3}\b` |
+
+The **Keywords** value is intentionally **not sanitized**. It shows the configured rule exactly as entered by the Administrator so the SOC analyst can identify which rule triggered.
+
+The report does **not** attempt to reconstruct or reproduce the original matched value from the source document. Only the configured rule/keyword is shown. The sanitized output file itself still replaces matched content with `X` characters.
 
 ## Rules Library
 
@@ -159,8 +231,8 @@ data/jobs.db
 Default retention:
 
 ```text
-Sanitized packages/reports: 1 day
-Job history metadata:       90 days
+Sanitized outputs/reports: 1 day
+Job history metadata:      90 days
 ```
 
 Configure with:
@@ -221,8 +293,10 @@ The GitHub Actions compatibility workflow tests:
 - Analyst/Admin RBAC
 - CSRF enforcement
 - Security headers
-- File/folder upload
-- ZIP + Excel report outputs
+- Direct single-file sanitized output
+- Multi-file/folder ZIP output
+- Nested folder-path preservation
+- Excel report with unsanitized configured **Keywords**
 - Persistent job history
 - Malicious archive path rejection
 - Gunicorn configuration
@@ -235,6 +309,7 @@ The GitHub Actions compatibility workflow tests:
 - Keep `SANIT_GUNICORN_WORKERS=1` for v2.1.
 - Keep runtime directories writable only by the service identity.
 - Use `systemd`/Gunicorn for production, not Flask's development server.
+- The configured keyword/rule is intentionally visible in the Excel report; the original matched source value is not reconstructed for the report.
 - AD/LDAP/SSO integration can be added later while retaining the Analyst/Admin authorization model.
 
 ## Support
