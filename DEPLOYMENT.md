@@ -2,12 +2,12 @@
 
 ## Validated Ubuntu targets
 
-The automated compatibility workflow validates the application against:
+Automated compatibility validation covers:
 
 - Ubuntu 22.04 with system Python 3.10
 - Ubuntu 24.04 with system Python 3.12
 
-The workflow creates a clean virtual environment, installs pinned dependencies, runs the environment verifier, executes authentication/RBAC and functional smoke tests, validates the Gunicorn configuration, and proves that the offline bundle installs with package-network access disabled.
+The workflow creates a clean virtual environment, installs pinned Python dependencies, verifies the local OCR engine, runs authentication/RBAC and functional smoke tests, validates Gunicorn, and proves the offline Python wheelhouse installation.
 
 ## Access model
 
@@ -17,33 +17,20 @@ v2.1 uses local application accounts stored as password hashes in `data/jobs.db`
 
 - Sign in/out
 - Upload files and folders
-- Start sanitization jobs
-- Monitor processing
-- View persistent job history
+- Sanitize logs, documents, supported images and archives
+- Monitor processing and view history
 - Download sanitized outputs and Excel reports
 - View active-rule count
 
 ### Administrator
 
-Includes all Analyst permissions plus:
-
-- View Rules Library
-- Add/edit/delete rules
-- Bulk-save rules
-- Clear rules
-- Replace rules from TXT
-
-Rules endpoints are protected server-side; hiding the UI is not the security control.
+Includes all Analyst permissions plus Rules Library administration.
 
 ## Output modes
 
-The production application has two output modes.
-
 ### Direct single-file output
 
-When a user selects exactly one file directly with **Browse Files**, the sanitized file is returned directly rather than wrapped in a ZIP.
-
-Example:
+Exactly one file selected directly with **Browse Files** returns a direct sanitized file plus a separate Excel report.
 
 ```text
 security.log
@@ -52,55 +39,102 @@ security_SANITIZED.log
 Sanitization_Report_<job_id>.xlsx
 ```
 
-A directly selected archive is returned as its sanitized/repacked archive with `_SANITIZED` added to the filename.
+The same behavior applies to supported PDF, DOCX and raster image files.
 
 ### Folder / multi-file batch output
 
-When the job contains multiple files, or when files were selected using **Browse Folder**, the application returns a ZIP package so relative folder structure is retained.
-
-Example:
+Multiple files or **Browse Folder** returns one ZIP preserving the relative hierarchy.
 
 ```text
 Sanitized_Package_<job_id>.zip
 ├── Sanitized_Files/
 │   └── Case-01/
-│       ├── notes.txt
+│       ├── screenshot.png
+│       ├── report.pdf
 │       └── Logs/
-│           └── Windows/
-│               └── Security/
-│                   └── security.log
+│           └── security.log
 └── Sanitization_Report_<job_id>.xlsx
 ```
 
-The Excel report is also exposed as a separate download.
+A folder upload remains a batch job even when the folder contains only one file.
 
-A folder upload remains a folder/batch job even if the selected folder contains only one file. Completely empty folders cannot be preserved through normal browser folder selection because the browser supplies file objects and relative paths, not standalone empty-directory objects.
+## Excel audit behavior
 
-## Excel audit report behavior
+Every successful job creates `Sanitization_Report_<job_id>.xlsx` with **Summary** and **Audit** sheets.
 
-Every successful job creates:
-
-```text
-Sanitization_Report_<job_id>.xlsx
-```
-
-The workbook contains **Summary** and **Audit** sheets.
-
-The Audit sheet columns are:
+Audit columns:
 
 - **File Name**
 - **Match Type**
 - **Occurrences**
-- **Location** — line, spreadsheet cell, filename or path where available
-- **Keywords** — the configured Rules Library keyword/regular expression that triggered the match
+- **Location** — line, spreadsheet cell, PDF page/OCR image, DOCX paragraph/image, filename or path where available
+- **Keywords** — configured Rules Library keyword/regular expression
 
-The **Keywords** value is intentionally stored unsanitized in the audit report. It represents the configured rule exactly as entered by the Administrator.
+The **Keywords** field is intentionally stored unsanitized so analysts can see which configured rule triggered. The report does not reconstruct the original source match beyond the configured rule text.
 
-The application does **not** reconstruct the original matched source value for the Excel report. The sanitized output itself continues to replace matched source content with `X` characters.
+## Offline OCR architecture
+
+OCR is performed locally with Tesseract. The application does not call cloud OCR services and does not download an OCR engine at runtime.
+
+OCR is used for:
+
+- standalone `.png`, `.jpg`, `.jpeg`, `.bmp`, `.tif`, `.tiff`, `.webp`,
+- raster/scanned image regions inside PDFs,
+- supported raster images embedded in DOCX files.
+
+Matches are mapped back to their image/page coordinates and permanently overwritten. Standalone image metadata is stripped when the sanitized image is re-saved.
+
+### OCR configuration
+
+Production defaults in `deploy/sanitization.env.example`:
+
+```text
+SANIT_REQUIRE_OCR=1
+SANIT_OCR_LANG=eng
+SANIT_OCR_DPI=200
+SANIT_OCR_PSM=6
+SANIT_OCR_MIN_CONFIDENCE=0
+SANIT_OCR_TIMEOUT_SECONDS=120
+SANIT_MAX_IMAGE_PIXELS=120000000
+```
+
+Optional explicit local paths:
+
+```text
+SANIT_TESSERACT_BINARY=/usr/bin/tesseract
+SANIT_TESSDATA_DIR=/usr/share/tesseract-ocr/5/tessdata
+```
+
+When `SANIT_REQUIRE_OCR=1`, the preflight verifier refuses production startup if Tesseract is unavailable.
+
+### Installing Tesseract
+
+On a connected staging host using approved Ubuntu repositories:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y tesseract-ocr
+```
+
+For an air-gapped SOC environment, install Tesseract and its required language data from your approved internal/offline package source. Do not depend on public package repositories from the production host.
+
+Confirm:
+
+```bash
+tesseract --version
+```
+
+The default OCR language is English (`eng`). Additional language packs can be installed locally and selected through `SANIT_OCR_LANG` when required.
+
+## OCR limitations
+
+OCR accuracy depends on source quality. Very low-resolution screenshots, handwriting, severe rotation, stylized fonts, poor contrast or intentionally obfuscated text can reduce recognition accuracy. For highly sensitive evidence, include a visual review of sanitized images/scans in the acceptance process.
+
+Multi-page TIFF is supported. Animated/multi-frame non-TIFF images fail closed. Unsupported DOCX embedded image formats fail closed. Password-protected PDFs and PDFs containing embedded files remain unsupported.
 
 ## Bootstrap accounts
 
-Create the first administrator interactively from the application directory:
+Create the first administrator interactively:
 
 ```bash
 .venv/bin/python main.py --create-user socadmin --role admin
@@ -112,34 +146,31 @@ Create an analyst:
 .venv/bin/python main.py --create-user analyst01 --role analyst
 ```
 
-List accounts:
+Account maintenance:
 
 ```bash
 .venv/bin/python main.py --list-users
-```
-
-Reset, disable or enable an account:
-
-```bash
 .venv/bin/python main.py --reset-password analyst01
 .venv/bin/python main.py --disable-user analyst01
 .venv/bin/python main.py --enable-user analyst01
 ```
 
-Passwords are entered interactively and are not placed on the command line or stored in plaintext.
+Passwords are entered interactively and are not stored in plaintext.
 
-## Security controls in v2.1
+## Security controls
 
-- Local password hashing using Werkzeug scrypt
-- Analyst/Admin role authorization on server endpoints
-- CSRF protection on uploads, logout and all rule changes
-- `Secure`, `HttpOnly`, `SameSite=Strict` session cookies
-- Stable session signing key across restarts
-- CSP, frame-deny, no-sniff, referrer and permissions security headers
-- Minimal unauthenticated `/healthz` endpoint
-- Detailed `/health` available only after authentication
-- Download links require both an authenticated session and job token
-- Gunicorn debug/development server is not used by systemd
+- Werkzeug scrypt password hashing
+- Analyst/Admin server-side authorization
+- CSRF protection on uploads, logout and rule changes
+- `Secure`, `HttpOnly`, `SameSite=Strict` cookies
+- Stable persistent session signing key
+- CSP, frame-deny, no-sniff, referrer and permissions headers
+- Authenticated download links with job tokens
+- Minimal public `/healthz`; detailed `/health` requires authentication
+- Gunicorn/systemd production service
+- Archive path/symlink/size/count/depth controls
+- Local-only OCR processing
+- Fail-closed handling for unsupported document/image content
 
 ## Pre-deployment verification
 
@@ -149,12 +180,17 @@ From the repository root:
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python scripts/verify_environment.py
+SANIT_REQUIRE_OCR=1 python scripts/verify_environment.py
 ```
 
-A successful environment reports `RESULT: PASSED`.
+Expected:
 
-For production/systemd startup, the unit sets `SANIT_REQUIRE_ADMIN=1`; the preflight check will refuse startup until at least one enabled Administrator exists.
+```text
+OCR:       OK (tesseract ...)
+RESULT: PASSED
+```
+
+The production environment also sets `SANIT_REQUIRE_ADMIN=1`, so the verifier will refuse startup until an enabled Administrator exists.
 
 ## Functional test suite
 
@@ -163,32 +199,11 @@ pip install -r requirements-ci.txt
 python -m pytest -q tests
 ```
 
-The suite covers:
+Tests cover authentication/RBAC/CSRF, output modes, encoding preservation, archive safety, PDF/DOCX, standalone image OCR, scanned PDF OCR and DOCX embedded-image OCR.
 
-- Login/logout and invalid-login handling
-- Analyst/Admin UI differences
-- Server-side Admin authorization for Rules Library
-- CSRF enforcement
-- Security headers
-- Authenticated `/health` and public minimal `/healthz`
-- Direct single-file sanitized download
-- `_SANITIZED` filename behavior
-- Multi-file upload as one job
-- Folder-relative paths
-- Nested folder-path preservation
-- Folder/multi-file ZIP package creation
-- Folder upload containing only one file remains packaged
-- Excel audit report creation
-- Excel **Keywords** column contains the configured rule text unsanitized
-- Sanitized output does not contain the configured matched test value
-- Persistent `/jobs` history and job creator
-- Download authorization links
-- Malicious ZIP path traversal rejection
-- Correct `Failed` job persistence
+## Building the air-gapped Python bundle
 
-## Building the air-gapped bundle
-
-On an internet-connected builder with the same target OS/CPU architecture:
+On an approved builder with the same target OS/CPU architecture:
 
 ```bash
 bash scripts/build_offline_bundle.sh
@@ -201,13 +216,17 @@ dist/SanitizationApp-v2.1-offline-<arch>.tar.gz
 dist/SanitizationApp-v2.1-offline-<arch>.tar.gz.sha256
 ```
 
-If `.7z`/`.rar` support is required, provide an approved portable 7-Zip binary during the build:
+The bundle contains the Python wheelhouse and application code. It uses `--no-index --find-links=./wheels` during installation.
+
+**Important:** Tesseract is a native/OS dependency and is not automatically downloaded by the application or Python wheel bundle. Install it separately from an approved offline/internal source on the target host, or provide an approved local Tesseract executable.
+
+If `.7z`/`.rar` support is required, you may also provide an approved portable 7-Zip binary during bundle build:
 
 ```bash
 SANIT_7ZIP_BINARY=/approved/path/7zz bash scripts/build_offline_bundle.sh
 ```
 
-## Offline installation
+## Offline Python installation
 
 ```bash
 tar -xzf SanitizationApp-v2.1-offline-<arch>.tar.gz
@@ -215,19 +234,16 @@ cd SanitizationApp-v2.1-offline-<arch>
 bash scripts/install_offline.sh
 ```
 
-The installer uses only:
+Then verify native OCR separately:
 
-```text
---no-index --find-links=./wheels
+```bash
+tesseract --version
+SANIT_REQUIRE_OCR=1 .venv/bin/python scripts/verify_environment.py
 ```
-
-and does not contact PyPI.
 
 ## Gunicorn production model
 
-The production WSGI configuration is `gunicorn.conf.py`.
-
-Default settings:
+Default:
 
 ```text
 Bind:             0.0.0.0:8443
@@ -236,68 +252,44 @@ Gunicorn workers: 1
 HTTP threads:     4
 Timeout:          120 seconds
 Graceful timeout: 30 seconds
-Max requests:     1000 + jitter
 TLS:              enabled
 ```
 
-### Why one Gunicorn worker?
-
-Sanitization jobs currently execute in background threads and live progress is held in process memory while persistent final status/history is written to SQLite. Multiple Gunicorn worker processes could route a progress request to a different process. Therefore v2.1 intentionally enforces:
+v2.1 intentionally enforces:
 
 ```text
 SANIT_GUNICORN_WORKERS=1
 ```
 
-HTTP concurrency is controlled with:
+Sanitization jobs currently execute in background threads and live progress is process-local. Do not increase worker count until jobs move to an external queue/worker service.
 
-```text
-SANIT_GUNICORN_THREADS=4
-```
-
-Do **not** increase the worker count above 1 until job execution is moved to a dedicated external job queue/worker service.
-
-Validate Gunicorn configuration:
+Validate:
 
 ```bash
 .venv/bin/gunicorn --check-config --config gunicorn.conf.py wsgi:application
 ```
 
-Manual production test:
-
-```bash
-bash scripts/start_production.sh
-```
-
 ## systemd installation on Ubuntu
 
-The supplied unit assumes:
+Expected paths:
 
 ```text
-Application: /opt/sanitization-app
-Service user: sanitizer
+Application:   /opt/sanitization-app
+Service user:  sanitizer
 Configuration: /etc/sanitization-app/sanitization.env
 ```
 
-Adjust the service file if your organization uses different paths.
-
-### 1. Create service account
+Create service account:
 
 ```bash
 sudo useradd --system --home /opt/sanitization-app --shell /usr/sbin/nologin sanitizer 2>/dev/null || true
 ```
 
-### 2. Place application under `/opt`
-
-Example:
+Place application and create runtime directories:
 
 ```bash
 sudo mkdir -p /opt/sanitization-app
 sudo cp -a . /opt/sanitization-app/
-```
-
-Install the offline/approved dependencies before enabling the service. Application code and `.venv` should normally remain owned by `root`, while runtime directories must be writable by the service account:
-
-```bash
 sudo mkdir -p /opt/sanitization-app/{uploads,outputs,logs,temp,data,certs}
 sudo chown -R sanitizer:sanitizer /opt/sanitization-app/uploads \
   /opt/sanitization-app/outputs \
@@ -307,16 +299,14 @@ sudo chown -R sanitizer:sanitizer /opt/sanitization-app/uploads \
   /opt/sanitization-app/certs
 ```
 
-### 3. Create Administrator as the service identity
+Create Administrator as service identity:
 
 ```bash
 cd /opt/sanitization-app
 sudo -u sanitizer .venv/bin/python main.py --create-user socadmin --role admin
 ```
 
-Create analyst accounts the same way with `--role analyst`.
-
-### 4. Install environment configuration
+Install environment configuration:
 
 ```bash
 sudo mkdir -p /etc/sanitization-app
@@ -325,9 +315,13 @@ sudo chown root:sanitizer /etc/sanitization-app/sanitization.env
 sudo chmod 640 /etc/sanitization-app/sanitization.env
 ```
 
-Review the values before starting the service.
+Verify the `sanitizer` identity can execute Tesseract:
 
-### 5. Install and enable systemd unit
+```bash
+sudo -u sanitizer tesseract --version
+```
+
+Install and enable service:
 
 ```bash
 sudo cp /opt/sanitization-app/deploy/sanitization-app.service /etc/systemd/system/sanitization-app.service
@@ -335,13 +329,12 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now sanitization-app
 ```
 
-`enable --now` starts the service immediately **and** configures automatic startup after reboot.
-
-### 6. Validate service
+Validate:
 
 ```bash
 sudo systemctl status sanitization-app --no-pager
 curl -k https://127.0.0.1:8443/healthz
+sudo journalctl -u sanitization-app -n 200 --no-pager
 ```
 
 Expected health response:
@@ -350,94 +343,48 @@ Expected health response:
 {"status":"ok"}
 ```
 
-View service logs:
-
-```bash
-sudo journalctl -u sanitization-app -n 200 --no-pager
-sudo journalctl -u sanitization-app -f
-```
-
-Restart after a configuration/application change:
-
-```bash
-sudo systemctl restart sanitization-app
-```
-
-## Automatic restart behavior
-
-The unit contains:
-
-```text
-Restart=on-failure
-RestartSec=5s
-```
-
-If Gunicorn exits unexpectedly, systemd waits five seconds and restarts it. Graceful shutdown uses SIGTERM with a 45-second stop timeout.
-
-## systemd sandboxing
-
-The unit also enables:
-
-- `NoNewPrivileges=true`
-- `PrivateTmp=true`
-- `PrivateDevices=true`
-- `ProtectSystem=full`
-- `ProtectHome=true`
-- Kernel/control-group protection
-- SUID/SGID restriction
-- `UMask=0077`
-- Explicit writable application runtime directories only
-
 ## TLS certificate
 
-The default Gunicorn configuration can use the application's self-signed certificate for staging. For production, replace it with an approved internal CA certificate.
-
-Configure paths in `/etc/sanitization-app/sanitization.env`:
+The self-signed certificate is for staging. Production should use an approved internal CA certificate:
 
 ```text
 SANIT_TLS_CERT=/path/to/approved/server.crt
 SANIT_TLS_KEY=/path/to/approved/server.key
 ```
 
-The `sanitizer` service account must be able to read the key, but the key should not be world-readable.
+The service identity must be able to read the key, but it must not be world-readable.
 
 ## Network restriction
 
-Expose TCP/8443 only to the approved SOC/admin network using the host firewall and/or upstream network controls. Do not expose the application directly to the public internet.
+Expose TCP/8443 only to approved SOC/admin networks. Do not expose the application directly to the public internet.
 
 ## Staging acceptance checklist
 
 Before production promotion, verify:
 
-1. Unauthenticated access redirects to Sign In.
-2. Invalid credentials are rejected.
-3. Analyst can sanitize/download/view history.
-4. Analyst cannot access Rules Library endpoints.
-5. Administrator can manage Rules Library.
-6. Logout invalidates the application session.
-7. Browse Files works.
-8. One directly selected file downloads as `*_SANITIZED.<ext>` rather than an unnecessary batch ZIP.
-9. The Excel report remains available separately for a direct single-file job.
-10. Browse Folder preserves relative nested folder structure.
-11. A folder upload is returned as a ZIP package, including when that folder contains only one file.
-12. Multi-file selection is returned as one ZIP package.
-13. Clear Selection works.
-14. Start Sanitization creates one auditable job.
-15. Text/log sanitization removes configured test matches from the sanitized output.
-16. `.xlsx` sanitization works.
-17. ZIP processing works.
-18. `.7z`/`.rar` works when approved 7-Zip is present.
-19. Excel Audit Report downloads successfully.
-20. Excel Audit sheet contains `File Name`, `Match Type`, `Occurrences`, `Location`, and `Keywords`.
-21. `Keywords` shows the configured rule exactly as defined and is intentionally not sanitized.
-22. The report does not reconstruct the original matched source value beyond the configured rule text.
-23. Job History survives application restart and records job creator.
-24. Invalid/corrupt archives become `Failed` instead of hanging.
-25. `/healthz` returns `status: ok`.
-26. `systemctl restart sanitization-app` restores service successfully.
-27. Service starts automatically after a test reboot.
-28. Approved TLS certificate is presented in production.
+1. Authentication, Analyst/Admin RBAC and logout work as intended.
+2. Direct single-file jobs return `*_SANITIZED.<ext>` plus a separate Excel report.
+3. Folder/multi-file jobs return a ZIP and preserve nested paths.
+4. UTF-8/UTF-16/Windows-1252 text files sanitize without encoding corruption.
+5. XLS/XLSX sanitization works.
+6. Text-based PDF redaction removes configured test matches and the PDF reopens.
+7. A scanned/image PDF containing a configured test keyword is OCR-detected and permanently masked.
+8. PNG and JPG screenshots containing configured test keywords are OCR-detected and permanently masked.
+9. Multi-page TIFF is tested if used operationally.
+10. DOCX text, tables, headers/footers and metadata sanitize correctly.
+11. Text inside a supported DOCX embedded image is OCR-detected and masked.
+12. Re-open sanitized PDF, DOCX and image outputs and visually verify redactions.
+13. Excel Audit contains `File Name`, `Match Type`, `Occurrences`, `Location`, `Keywords`.
+14. OCR findings have useful locations such as `Image OCR`, `Page N image N OCR` or `DOCX image ... OCR`.
+15. Excel `Keywords` shows configured rule text and does not reconstruct arbitrary original source matches.
+16. ZIP processing works; 7Z/RAR works when approved 7-Zip is present.
+17. Unsupported/corrupt content becomes `Failed` instead of silently passing through.
+18. Job History survives application restart and records job creator.
+19. `/healthz` returns `status: ok`.
+20. `SANIT_REQUIRE_OCR=1 python scripts/verify_environment.py` reports OCR ready.
+21. Service survives `systemctl restart` and a test reboot.
+22. Approved TLS certificate is presented and TCP/8443 is restricted appropriately.
 
-## Remaining enterprise enhancement
+## Remaining enterprise enhancements
 
-Local authentication is suitable for controlled internal deployment. A later release can replace/local-map these accounts with organization AD/LDAP/SSO while retaining the same Analyst/Admin authorization model.
+Potential future enhancements include AD/LDAP/SSO, login rate limiting/lockout, richer administrative audit events, dedicated job workers/queue for horizontal scaling, and additional binary format parsers such as PowerPoint/EVTX/PCAP where a defensible sanitization model is defined.
