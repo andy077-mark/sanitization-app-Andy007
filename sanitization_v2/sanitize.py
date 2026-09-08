@@ -20,6 +20,7 @@ from . import config as cfg
 from . import rules as rules_module
 from .document_sanitizers import sanitize_docx_file as sanitize_docx_document
 from .document_sanitizers import sanitize_pdf_file as sanitize_pdf_document
+from .ocr_sanitizer import IMAGE_EXTS, sanitize_image_file as sanitize_image_document
 from .text_encoding import TEXT_LIKE_EXTS, detect_text_encoding, is_known_binary_extension
 
 
@@ -187,7 +188,7 @@ def sanitize_xls_file(fpath: Path, rules: list[str], audit: dict, audit_name: st
 
 
 def sanitize_file_if_supported(fpath: Path, rules: list[str], audit: dict, audit_name: str) -> int:
-    """Sanitize supported documents, spreadsheets and text; fail closed otherwise."""
+    """Sanitize supported documents, images, spreadsheets and text; fail closed otherwise."""
     ext = fpath.suffix.lower()
     if ext == ".pdf":
         return sanitize_pdf_document(
@@ -206,6 +207,16 @@ def sanitize_file_if_supported(fpath: Path, rules: list[str], audit: dict, audit
             audit,
             audit_name,
             sanitize_content,
+            classify_rule,
+            audit_add,
+        )
+    if ext in IMAGE_EXTS:
+        return sanitize_image_document(
+            fpath,
+            rules,
+            audit,
+            audit_name,
+            classify_rule,
             audit_add,
         )
     if ext == ".xlsx":
