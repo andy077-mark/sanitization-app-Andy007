@@ -17,6 +17,8 @@ An offline-first SOC utility for sanitizing sensitive information before logs, s
 - Direct sanitized download for a single file selected directly
 - ZIP package for folder and multi-file batch jobs
 - Nested folder structure preserved inside batch packages
+- Encoding-aware text sanitization with UTF-8, UTF-8 BOM, UTF-16 LE/BE and Windows-1252 support
+- Fail-closed handling for unsupported binary/document formats instead of silently passing them through
 - Separate Excel audit report for every successful job
 - Excel Audit sheet shows the configured **Keywords** / rule text that triggered the match
 - Archive traversal/symlink/size/count/depth protections
@@ -120,12 +122,45 @@ The configuration refuses a worker count above 1 until job execution is moved to
 
 ## Supported content
 
-- Text/log: `.txt`, `.log`, `.csv` and readable text files
-- Spreadsheets: `.xlsx`, `.xls`
-- Native archive/compression: `.zip`, `.tar`, `.tgz`, `.tar.gz`, `.tar.bz2`, `.tbz2`, `.tar.xz`, `.gz`, `.bz2`, `.xz`
+### Text and SOC/config formats
+
+The normal line-oriented sanitizer now supports these text-based extensions directly:
+
+```text
+.txt .log .csv .tsv .json .jsonl .ndjson
+.xml .yaml .yml .ini .cfg .conf .config .properties .env
+.md .rst .html .htm .css .js .ts .py
+.ps1 .psm1 .psd1 .sh .bash .zsh .bat .cmd .vbs
+.sql .reg .inf .service .socket .timer .rules .list .hosts
+```
+
+Readable text with another extension can also be processed when the application can safely identify its encoding.
+
+Supported text encodings include:
+
+- UTF-8
+- UTF-8 with BOM
+- UTF-16 Little Endian, with BOM and conservative BOM-less detection
+- UTF-16 Big Endian, with BOM and conservative BOM-less detection
+- Windows-1252 legacy text
+
+The sanitizer preserves the detected encoding/BOM instead of rewriting every text file as UTF-8. This prevents UTF-16/legacy exports from becoming garbled or displaying Chinese-looking characters after sanitization.
+
+### Spreadsheets
+
+- `.xlsx`
+- `.xls`
+
+### Archives and compression
+
+- Native: `.zip`, `.tar`, `.tgz`, `.tar.gz`, `.tar.bz2`, `.tbz2`, `.tar.xz`, `.gz`, `.bz2`, `.xz`
 - With local 7-Zip: `.7z`, `.rar`, `.lz`, `.zst` and supported specialist formats
 
 Nested archives are processed up to the configured depth limit.
+
+### Not yet supported as document formats
+
+Binary/document formats such as PDF, Word, PowerPoint, images, EVTX and PCAP are not treated as plain text. The job fails clearly rather than returning an unchanged file that could be mistaken for a sanitized result. Dedicated parsers can be added for these formats in a future release.
 
 ## Output behavior
 
@@ -273,7 +308,7 @@ Build on an approved internet-connected builder for the target OS/CPU:
 bash scripts/build_offline_bundle.sh
 ```
 
-The generated v2.1 bundle contains the local wheelhouse, application, authentication code, Gunicorn configuration, systemd deployment files and verification scripts.
+The generated v2.1 bundle contains the local wheelhouse, application, authentication code, Gunicorn configuration, systemd deployment files, staging acceptance checker, performance benchmark tool and verification scripts.
 
 Install on the air-gapped host with:
 
@@ -296,9 +331,15 @@ The GitHub Actions compatibility workflow tests:
 - Direct single-file sanitized output
 - Multi-file/folder ZIP output
 - Nested folder-path preservation
+- UTF-8 BOM preservation
+- UTF-16 LE/BE preservation without garbled output
+- Windows-1252 processing
+- Expanded text extension handling
+- Fail-closed rejection of known unsupported binary/document files
 - Excel report with unsanitized configured **Keywords**
 - Persistent job history
 - Malicious archive path rejection
+- Performance benchmark smoke test
 - Gunicorn configuration
 - Offline wheelhouse installation
 
@@ -309,6 +350,7 @@ The GitHub Actions compatibility workflow tests:
 - Keep `SANIT_GUNICORN_WORKERS=1` for v2.1.
 - Keep runtime directories writable only by the service identity.
 - Use `systemd`/Gunicorn for production, not Flask's development server.
+- Do not force unsupported binary/document formats through the text sanitizer; add a dedicated parser instead.
 - The configured keyword/rule is intentionally visible in the Excel report; the original matched source value is not reconstructed for the report.
 - AD/LDAP/SSO integration can be added later while retaining the Analyst/Admin authorization model.
 
