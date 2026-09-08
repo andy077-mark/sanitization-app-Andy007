@@ -22,7 +22,6 @@ EXPECTED = {
     "xlwt": "1.3.0",
     "PyMuPDF": "1.26.4",
     "python-docx": "1.2.0",
-    "Pillow": "11.3.0",
     "gunicorn": "23.0.0",
 }
 
@@ -64,7 +63,6 @@ def main() -> int:
     try:
         from sanitization_v2 import auth
         from sanitization_v2 import config as cfg
-        from sanitization_v2.ocr_sanitizer import ocr_engine_version
 
         for name in ("UPLOAD", "OUTPUT", "LOGS", "TEMP", "DATA"):
             path = getattr(cfg, name)
@@ -116,18 +114,6 @@ def main() -> int:
             print(f"7-Zip:     OK ({seven_zip})")
         else:
             warnings.append("7-Zip not found: ZIP/TAR/GZ/BZ2/XZ work, but RAR/7Z require a local 7-Zip binary")
-
-        ocr_version = ocr_engine_version()
-        if ocr_version:
-            print(f"OCR:       OK ({ocr_version})")
-        elif os.environ.get("SANIT_REQUIRE_OCR", "0") == "1":
-            failures.append(
-                "Tesseract OCR is required but unavailable; install an approved local package or set SANIT_TESSERACT_BINARY"
-            )
-        else:
-            warnings.append(
-                "Tesseract OCR not found: text/PDF/DOCX still work, but image and scanned-document OCR jobs will fail closed"
-            )
 
         free_gb = shutil.disk_usage(cfg.BASE).free / (1024 ** 3)
         print(f"Disk free: {free_gb:.1f} GB")
