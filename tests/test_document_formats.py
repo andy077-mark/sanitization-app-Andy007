@@ -2,6 +2,7 @@ import zipfile
 
 import pytest
 
+from sanitization_v2.ocr_sanitizer import find_tesseract
 from sanitization_v2.sanitize import sanitize_file_if_supported
 
 RULES = ["TESTSECRET", r"\b10\.20\.30\.40\b"]
@@ -37,7 +38,8 @@ def test_pdf_text_is_permanently_redacted_and_reopens(tmp_path):
     assert any(item["location"].startswith("Page 1") for item in audit.values())
 
 
-def test_pdf_image_only_page_fails_closed_without_ocr(tmp_path):
+@pytest.mark.skipif(find_tesseract() is None, reason="Tesseract OCR not installed")
+def test_pdf_blank_image_only_page_is_ocr_inspected_and_reopens(tmp_path):
     import pymupdf as fitz
 
     path = tmp_path / "scanned.pdf"
@@ -49,8 +51,11 @@ def test_pdf_image_only_page_fails_closed_without_ocr(tmp_path):
     doc.save(path)
     doc.close()
 
-    with pytest.raises(ValueError, match="image-only|OCR"):
-        sanitize(path)
+    count, _ = sanitize(path)
+
+    assert count == 0
+    with fitz.open(path) as result:
+        assert len(result) == 1
 
 
 def test_docx_sanitizes_text_across_runs_tables_header_and_metadata(tmp_path):
