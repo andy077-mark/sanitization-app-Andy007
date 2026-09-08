@@ -1,113 +1,156 @@
-# SOC Data Sanitization Platform v2.0
+# SOC Data Sanitization Platform v2.1
 
 An offline-first SOC utility for sanitizing sensitive information before logs, spreadsheets, evidence files or archives are shared. Matched content is replaced with `X` characters while the application produces a sanitized output package and a safe Excel audit report.
 
-## v2.0 Highlights
+## v2.1 Highlights
 
 - Modern SOC dashboard and sanitization workspace
+- Local sign-in with **Analyst** and **Administrator** roles
+- Server-side RBAC for Rules Library administration
+- CSRF protection for uploads, logout and rule changes
+- Secure session cookies and stable session signing key
 - File and **folder** upload from the browser
 - One auditable job can contain multiple files
 - Persistent server-side job history using SQLite (`data/jobs.db`)
-- Reliable `Queued`, `Processing`, `Done` and `Failed` job states
-- Interrupted jobs are marked failed after an application restart instead of remaining stuck
-- Sanitized output packaged as `Sanitized_Package_<job_id>.zip`
-- Excel evidence report: `Sanitization_Report_<job_id>.xlsx`
-- Audit report includes:
-  - File Name
-  - Match Type
-  - Occurrences
-  - Location (line/cell/filename where available)
-  - Safe Example (after sanitization)
-- ZIP/TAR/GZ/BZ2/XZ processing using the Python standard library
-- RAR/7Z and other specialist archive formats use a **locally installed or bundled 7-Zip** binary
-- Archive safety controls for traversal, symlinks, extraction size, file count and nesting depth
-- No runtime download of 7-Zip from the application
-- Flask debug mode disabled in server mode
-- Rule management remains available from the browser
+- Job creator recorded in persistent history
+- Reliable `Queued`, `Processing`, `Done` and `Failed` states
+- Sanitized ZIP package and Excel audit report per job
+- Archive traversal/symlink/size/count/depth protections
+- No runtime dependency or 7-Zip downloads
+- Pinned runtime dependencies for repeatable offline installs
+- **Gunicorn** production WSGI configuration
+- Hardened Ubuntu **systemd** service with automatic restart and boot startup
+- Automated Ubuntu 22.04 / 24.04 compatibility validation
 
-## Supported Content
+## Roles
 
-- Text/log data: `.txt`, `.log`, `.csv` and UTF-8 readable text files
-- Spreadsheets: `.xlsx`, `.xls`
-- Archives/compression: `.zip`, `.tar`, `.tgz`, `.tar.gz`, `.tar.bz2`, `.tbz2`, `.tar.xz`, `.gz`, `.bz2`, `.xz`
-- With local 7-Zip: `.7z`, `.rar`, `.lz`, `.zst` and other formats supported by that binary
+### Analyst
 
-Nested archives are processed up to the configured depth limit.
+- Sign in/out
+- Sanitize files/folders/archives
+- Monitor jobs
+- View history
+- Download sanitized packages and audit reports
+- View active rule count
+
+### Administrator
+
+Includes all Analyst permissions plus full Rules Library administration.
 
 ## Requirements
 
 - Python 3.10+
 - Packages from `requirements.txt`
-- Optional local/bundled 7-Zip for RAR/7Z and specialist archive formats
+- Optional local/bundled 7-Zip for `.7z`, `.rar` and specialist formats
 
-> The web interface has no CDN, external font, analytics or external JavaScript dependency. Python packages and optional 7-Zip still need to be installed or provided locally before first use in a fully air-gapped environment.
+The browser interface has no CDN, external fonts, analytics or third-party JavaScript dependency.
 
-## Quick Start
-
-### Linux / Ubuntu / macOS
+## First-time setup
 
 ```bash
 python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python3 main.py --serve
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python main.py --create-user socadmin --role admin
 ```
 
-### Windows PowerShell
+Create an analyst account:
 
-```powershell
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-python main.py --serve
+```bash
+.venv/bin/python main.py --create-user analyst01 --role analyst
 ```
 
-Then open:
+Passwords are entered interactively and are not placed on the command line.
+
+## Testing server
+
+```bash
+.venv/bin/python main.py --serve
+```
+
+Open:
 
 ```text
 https://localhost:8443
 ```
 
-A browser warning is expected when using the application's local self-signed certificate.
+The local self-signed certificate is intended for staging/testing. Production should use an approved internal CA certificate.
 
-## Workflow
+## Production server
 
-1. Open **New Sanitization**.
-2. Choose **Browse Files** or **Browse Folder**.
-3. Review the selected files.
-4. Click **Start Sanitization**.
-5. Monitor the job status and progress.
-6. When complete, download:
-   - **Sanitized Package**
-   - **Excel Audit Report**
-7. Previous jobs remain visible in **Job History** even after a browser restart.
+Gunicorn configuration:
+
+```text
+gunicorn.conf.py
+```
+
+Manual production launch:
+
+```bash
+bash scripts/start_production.sh
+```
+
+Ubuntu systemd unit:
+
+```text
+deploy/sanitization-app.service
+```
+
+Full production steps, account bootstrap, automatic restart/startup, TLS and staging acceptance checks are in:
+
+```text
+DEPLOYMENT.md
+```
+
+## Gunicorn worker model
+
+v2.1 intentionally uses one Gunicorn worker process with configurable HTTP threads because sanitization jobs execute in background threads and live progress is held in process memory.
+
+Default:
+
+```text
+SANIT_GUNICORN_WORKERS=1
+SANIT_GUNICORN_THREADS=4
+```
+
+The configuration refuses a worker count above 1 until job execution is moved to an external worker queue.
+
+## Supported content
+
+- Text/log: `.txt`, `.log`, `.csv` and readable text files
+- Spreadsheets: `.xlsx`, `.xls`
+- Native archive/compression: `.zip`, `.tar`, `.tgz`, `.tar.gz`, `.tar.bz2`, `.tbz2`, `.tar.xz`, `.gz`, `.bz2`, `.xz`
+- With local 7-Zip: `.7z`, `.rar`, `.lz`, `.zst` and supported specialist formats
+
+Nested archives are processed up to the configured depth limit.
+
+## Output
+
+Each successful job creates:
+
+```text
+Sanitized_Package_<job_id>.zip
+Sanitization_Report_<job_id>.xlsx
+```
+
+The Excel report includes:
+
+- File Name
+- Match Type
+- Occurrences
+- Location (line/cell/path where available)
+- Safe Example after sanitization
+
+Original sensitive match values are not intentionally reproduced in the report.
 
 ## Rules Library
 
 Rules are regular expressions stored in `bad_words.txt`.
 
-The UI supports:
+Only Administrators can view or modify rule content from the web interface. Analysts can see the active-rule count but cannot access Rules Library endpoints.
 
-- Add rule
-- Edit rule
-- Delete rule
-- Save all rules
-- Clear all rules
-- Replace rules from a UTF-8 `.txt` file
+## Job history
 
-Lines beginning with `#` are comments and are ignored.
-
-### Examples
-
-| Pattern | Example |
-|---|---|
-| `2023` | `10-02-2023` → `10-02-XXXX` |
-| `\bandy\b` | `Andy` → `XXXX` |
-| `\b[\w\.-]+@company\.com\b` | company email addresses are redacted |
-
-## Job History
-
-Job metadata is stored in:
+Persistent metadata is stored in:
 
 ```text
 data/jobs.db
@@ -115,88 +158,84 @@ data/jobs.db
 
 Default retention:
 
-- Sanitized packages/reports: **1 day**
-- Job history metadata: **90 days**
+```text
+Sanitized packages/reports: 1 day
+Job history metadata:       90 days
+```
 
-These values can be changed using environment variables:
+Configure with:
 
 ```text
 SANIT_OUTPUT_RETENTION_DAYS
 SANIT_HISTORY_RETENTION_DAYS
 ```
 
-## Archive Safety Limits
+## User-management CLI
 
-Defaults:
-
-```text
-Maximum extracted size: 4096 MB
-Maximum extracted files: 10000
-Maximum nested archive depth: 5
-7-Zip processing timeout: 300 seconds
+```bash
+.venv/bin/python main.py --list-users
+.venv/bin/python main.py --reset-password analyst01
+.venv/bin/python main.py --disable-user analyst01
+.venv/bin/python main.py --enable-user analyst01
 ```
 
-Configure with:
+## Health endpoints
+
+Minimal unauthenticated service probe:
 
 ```text
-SANIT_MAX_EXTRACTED_MB
-SANIT_MAX_EXTRACTED_FILES
-SANIT_MAX_ARCHIVE_DEPTH
-SANIT_ARCHIVE_TIMEOUT_SECONDS
+GET /healthz
 ```
 
-## Folder Structure
-
-```text
-SanitizationApp/
-├── main.py                  # compatibility entry point
-├── sanitization_v2/        # modular v2 backend
-│   ├── app.py
-│   ├── config.py
-│   ├── jobs.py
-│   ├── rules.py
-│   └── sanitize.py
-├── bad_words.txt
-├── requirements.txt
-├── start.sh
-├── start.bat
-├── templates/
-│   └── index.html
-├── data/
-│   └── jobs.db              # created automatically
-├── uploads/                 # temporary
-├── outputs/                 # packages and Excel reports
-├── logs/
-├── temp/
-├── tools/
-│   └── 7zip/                # optional bundled 7-Zip
-└── certs/                    # generated local certificate
-```
-
-## Health Endpoint
+Authenticated application health:
 
 ```text
 GET /health
 ```
 
-Returns application status, version, local/offline mode, upload limits and whether 7-Zip is available.
+## Air-gapped bundle
 
-## CLI
+Build on an approved internet-connected builder for the target OS/CPU:
 
 ```bash
-python main.py test.txt
-python main.py test.txt --rules-file bad_words.txt
-python main.py test.txt --rules "secret" "2026"
+bash scripts/build_offline_bundle.sh
 ```
 
-The CLI now produces the same ZIP package and Excel audit report used by the web application.
+The generated v2.1 bundle contains the local wheelhouse, application, authentication code, Gunicorn configuration, systemd deployment files and verification scripts.
 
-## Security Notes
+Install on the air-gapped host with:
 
-- Deploy inside a trusted network unless authentication and authorization are added.
-- The current self-signed certificate is suitable for internal testing; enterprise deployments should use an approved internal certificate.
-- Rules management changes sanitization behavior and should be restricted to authorized administrators in a future authentication release.
-- Test upgrades in a staging environment before replacing a working SOC deployment.
+```bash
+bash scripts/install_offline.sh
+```
+
+Installation uses `--no-index --find-links=./wheels` and does not contact PyPI.
+
+## Automated validation
+
+The GitHub Actions compatibility workflow tests:
+
+- Ubuntu 22.04 / Python 3.10
+- Ubuntu 24.04 / Python 3.12
+- Local login/logout
+- Analyst/Admin RBAC
+- CSRF enforcement
+- Security headers
+- File/folder upload
+- ZIP + Excel report outputs
+- Persistent job history
+- Malicious archive path rejection
+- Gunicorn configuration
+- Offline wheelhouse installation
+
+## Security notes
+
+- Restrict network access to approved SOC/admin networks.
+- Use an internal CA certificate in production.
+- Keep `SANIT_GUNICORN_WORKERS=1` for v2.1.
+- Keep runtime directories writable only by the service identity.
+- Use `systemd`/Gunicorn for production, not Flask's development server.
+- AD/LDAP/SSO integration can be added later while retaining the Analyst/Admin authorization model.
 
 ## Support
 
