@@ -80,6 +80,9 @@ jobs:
       - name: Run authentication and functional smoke tests
         run: .venv/bin/python -m pytest -q tests
 
+      - name: Run 1 MB performance benchmark smoke test
+        run: .venv/bin/python scripts/benchmark_performance.py --sizes-mb 1 --output-dir /tmp/sanitization-benchmark-ci
+
       - name: Validate Gunicorn production configuration
         run: .venv/bin/gunicorn --check-config --config gunicorn.conf.py wsgi:application
 
