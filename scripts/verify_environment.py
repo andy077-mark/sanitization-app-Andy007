@@ -20,6 +20,8 @@ EXPECTED = {
     "openpyxl": "3.1.5",
     "xlrd": "2.0.2",
     "xlwt": "1.3.0",
+    "PyMuPDF": "1.26.4",
+    "python-docx": "1.2.0",
     "gunicorn": "23.0.0",
 }
 
@@ -116,7 +118,7 @@ def main() -> int:
         free_gb = shutil.disk_usage(cfg.BASE).free / (1024 ** 3)
         print(f"Disk free: {free_gb:.1f} GB")
         if free_gb < 5:
-            warnings.append("Less than 5 GB free disk space; large archive processing may fail")
+            warnings.append("Less than 5 GB free disk space; large archive/document processing may fail")
     except Exception as exc:
         failures.append(f"Application environment check failed: {exc}")
 
