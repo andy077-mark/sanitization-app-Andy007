@@ -96,9 +96,9 @@ def test_extended_text_extensions_are_sanitized(tmp_path, filename):
     assert "XXXXXXXXXX" in path.read_text("utf-8")
 
 
-def test_known_binary_pdf_fails_closed_instead_of_being_corrupted(tmp_path):
-    path = tmp_path / "evidence.pdf"
-    path.write_bytes(b"%PDF-1.7\nTESTSECRET\n" + bytes(range(32)))
+def test_known_binary_pcap_fails_closed_instead_of_being_corrupted(tmp_path):
+    path = tmp_path / "evidence.pcap"
+    path.write_bytes(b"\xd4\xc3\xb2\xa1" + b"TESTSECRET" + bytes(range(32)))
 
     with pytest.raises(ValueError, match="Unsupported binary/document file type"):
         sanitize(path)
