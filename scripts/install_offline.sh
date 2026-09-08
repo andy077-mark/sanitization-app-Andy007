@@ -16,6 +16,7 @@ if sys.version_info < (3, 10):
 print("Python", sys.version.split()[0], "OK")
 PY
 
+rm -rf .venv
 python3 -m venv .venv
 "$ROOT/.venv/bin/python" -m pip install \
   --no-index \
@@ -26,5 +27,13 @@ python3 -m venv .venv
 
 echo
 echo "Offline installation completed successfully."
-echo "Start for testing with:"
+echo "Before production startup, create an administrator:"
+echo "  .venv/bin/python main.py --create-user <username> --role admin"
+echo
+echo "Optional analyst account:"
+echo "  .venv/bin/python main.py --create-user <username> --role analyst"
+echo
+echo "Testing server:"
 echo "  .venv/bin/python main.py --serve"
+echo
+echo "Production deployment: follow DEPLOYMENT.md for Gunicorn + systemd."
