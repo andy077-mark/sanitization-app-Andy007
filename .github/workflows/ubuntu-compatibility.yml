@@ -1,4 +1,4 @@
-name: Ubuntu Compatibility and Offline Bundle
+name: Ubuntu Compatibility, RBAC and Offline Bundle
 
 on:
   push:
@@ -67,8 +67,11 @@ jobs:
       - name: Verify deployment environment
         run: .venv/bin/python scripts/verify_environment.py
 
-      - name: Run v2 functional smoke tests
+      - name: Run authentication and functional smoke tests
         run: .venv/bin/python -m pytest -q tests
+
+      - name: Validate Gunicorn production configuration
+        run: .venv/bin/gunicorn --check-config --config gunicorn.conf.py wsgi:application
 
       - name: Confirm command-line entry point
         run: .venv/bin/python main.py --help
@@ -94,16 +97,17 @@ jobs:
         shell: bash
         run: |
           mkdir -p /tmp/sanitization-offline-test
-          tar -xzf dist/SanitizationApp-v2-offline-*.tar.gz -C /tmp/sanitization-offline-test
-          cd /tmp/sanitization-offline-test/SanitizationApp-v2-offline-*
+          tar -xzf dist/SanitizationApp-v2.1-offline-*.tar.gz -C /tmp/sanitization-offline-test
+          cd /tmp/sanitization-offline-test/SanitizationApp-v2.1-offline-*
           PIP_NO_INDEX=1 bash scripts/install_offline.sh
           .venv/bin/python main.py --help
+          .venv/bin/gunicorn --check-config --config gunicorn.conf.py wsgi:application
 
       - name: Upload tested offline package
         uses: actions/upload-artifact@v4
         with:
-          name: SanitizationApp-v2-Ubuntu24-offline
+          name: SanitizationApp-v2.1-Ubuntu24-offline
           path: |
-            dist/SanitizationApp-v2-offline-*.tar.gz
-            dist/SanitizationApp-v2-offline-*.tar.gz.sha256
+            dist/SanitizationApp-v2.1-offline-*.tar.gz
+            dist/SanitizationApp-v2.1-offline-*.tar.gz.sha256
           if-no-files-found: error
