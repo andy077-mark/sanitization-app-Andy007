@@ -120,6 +120,8 @@ def sanitize_text_file(
                     raise ValueError(f"Text encoding marker changed while reading: {fpath.name}")
                 dst_raw.write(bom)
 
+            # newline="" keeps the input newline convention instead of silently
+            # converting CRLF/LF while the content itself is sanitized.
             with io.TextIOWrapper(src_raw, encoding=codec, errors="strict", newline="") as src, io.TextIOWrapper(
                 dst_raw, encoding=codec, errors="strict", newline=""
             ) as dst:

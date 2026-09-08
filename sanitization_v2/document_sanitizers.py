@@ -148,6 +148,7 @@ def sanitize_pdf_file(
                     text_color=(0, 0, 0),
                     cross_out=False,
                 )
+            # Preserve images/vector artwork where possible while permanently removing text.
             page.apply_redactions(images=0, graphics=0, text=0)
 
         if extractable_chars == 0 and len(doc) > 0:
@@ -175,6 +176,7 @@ def sanitize_pdf_file(
         doc.close()
 
     try:
+        # A successful reopen catches structural corruption before replacing the source.
         with fitz.open(tmp_out) as check:
             if check.needs_pass:
                 raise ValueError("Sanitized PDF unexpectedly requires a password")
@@ -415,6 +417,7 @@ def sanitize_docx_file(
                 f"DOCX appears image-only: {fpath.name}. OCR support is required before sanitization."
             )
 
+        # Validate that Microsoft Word's normal document model can reopen the package.
         Document(tmp_out)
         tmp_out.replace(fpath)
         return total
