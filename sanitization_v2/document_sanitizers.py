@@ -1,19 +1,17 @@
 """Dedicated sanitizers for structured document formats.
 
-PDF sanitization uses true PDF redaction for extractable text. DOCX sanitization
-updates text-bearing XML nodes while preserving the package and run structure.
-Image-only/scanned content is not OCR'd and fails closed when no extractable text
-is available.
+PDF sanitization uses true PDF redaction for extractable text and local OCR for
+raster/scanned regions. DOCX sanitization updates text-bearing XML nodes and OCR-
+sanities embedded raster images while preserving the Office package structure.
 """
 from __future__ import annotations
 
-import os
 import re
-import shutil
-import tempfile
 import zipfile
 from pathlib import Path
 from typing import Callable
+
+from .ocr_sanitizer import IMAGE_EXTS, OCR_DPI, ocr_image_matches, sanitize_image_bytes
 
 SanitizeContent = Callable[[str, list[str] | None], tuple[str, int, dict[str, int]]]
 ClassifyRule = Callable[[str, int], str]
@@ -71,6 +69,124 @@ def _pdf_page_character_map(page) -> tuple[str, list[dict]]:
     return "".join(item["char"] for item in chars), chars
 
 
+def _add_native_pdf_redactions(
+    page,
+    page_index: int,
+    rules: list[str],
+    audit: dict,
+    audit_name: str,
+    classify_rule: ClassifyRule,
+    audit_add: AuditAdd,
+):
+    import pymupdf as fitz
+
+    text, char_map = _pdf_page_character_map(page)
+    _, ranges = _collect_sanitize_ranges(text, rules, classify_rule)
+    redactions: list[tuple[object, str]] = []
+    total = 0
+
+    for start, end, kind in ranges:
+        segment = char_map[start:end]
+        by_line: dict[int, list[dict]] = {}
+        for item in segment:
+            if item["bbox"] is None:
+                continue
+            by_line.setdefault(int(item["line"]), []).append(item)
+        if not by_line:
+            raise ValueError(
+                f"PDF sanitization could not safely map a match to page coordinates on page {page_index}"
+            )
+        for line_items in by_line.values():
+            boxes = [item["bbox"] for item in line_items if item["bbox"] is not None]
+            rect = _rect_union(fitz, boxes)
+            redactions.append((rect, "X" * max(1, len(line_items))))
+        audit_add(audit, audit_name, kind, 1, f"Page {page_index}", "")
+        total += 1
+    return redactions, total
+
+
+def _page_image_regions(page):
+    """Return unique raster-image rectangles on a PDF page, including inline images."""
+    import pymupdf as fitz
+
+    regions = []
+    seen: set[tuple[float, float, float, float]] = set()
+    try:
+        infos = page.get_image_info(xrefs=True)
+    except Exception:
+        infos = []
+    for info in infos:
+        bbox = info.get("bbox")
+        if not bbox:
+            continue
+        rect = fitz.Rect(bbox)
+        if rect.is_empty or rect.width <= 1 or rect.height <= 1:
+            continue
+        key = tuple(round(value, 3) for value in (rect.x0, rect.y0, rect.x1, rect.y1))
+        if key in seen:
+            continue
+        seen.add(key)
+        regions.append(rect)
+    return regions
+
+
+def _add_ocr_pdf_redactions(
+    page,
+    page_index: int,
+    rules: list[str],
+    audit: dict,
+    audit_name: str,
+    classify_rule: ClassifyRule,
+    audit_add: AuditAdd,
+):
+    """OCR only raster-image regions so native PDF text is not double-counted."""
+    import pymupdf as fitz
+    from PIL import Image
+
+    redactions: list[tuple[object, str]] = []
+    total = 0
+    inspected = 0
+
+    for image_index, clip in enumerate(_page_image_regions(page), 1):
+        pix = page.get_pixmap(dpi=OCR_DPI, clip=clip, alpha=False)
+        if pix.width <= 0 or pix.height <= 0:
+            continue
+        raster = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+        _, matches = ocr_image_matches(raster, rules, classify_rule)
+        inspected += 1
+        scale_x = clip.width / pix.width
+        scale_y = clip.height / pix.height
+
+        for match in matches:
+            for segment in match["segments"]:
+                left, top, right, bottom = segment["bbox"]
+                mapped = fitz.Rect(
+                    clip.x0 + left * scale_x,
+                    clip.y0 + top * scale_y,
+                    clip.x0 + right * scale_x,
+                    clip.y0 + bottom * scale_y,
+                )
+                # Small padding covers anti-aliased glyph edges in raster scans.
+                pad_x = min(1.5, max(0.4, mapped.height * 0.08))
+                pad_y = min(1.5, max(0.4, mapped.height * 0.08))
+                mapped.x0 = max(clip.x0, mapped.x0 - pad_x)
+                mapped.y0 = max(clip.y0, mapped.y0 - pad_y)
+                mapped.x1 = min(clip.x1, mapped.x1 + pad_x)
+                mapped.y1 = min(clip.y1, mapped.y1 + pad_y)
+                overlay = "X" * max(1, min(int(segment["characters"]), 40))
+                redactions.append((mapped, overlay))
+            audit_add(
+                audit,
+                audit_name,
+                match["kind"],
+                1,
+                f"Page {page_index} image {image_index} OCR",
+                "",
+            )
+            total += 1
+    return redactions, total, inspected
+
+
 def sanitize_pdf_file(
     fpath: Path,
     rules: list[str],
@@ -80,10 +196,11 @@ def sanitize_pdf_file(
     classify_rule: ClassifyRule,
     audit_add: AuditAdd,
 ) -> int:
-    """Sanitize an extractable-text PDF using permanent PDF redactions.
+    """Sanitize PDF text and raster/scanned content with permanent redactions.
 
-    Password-protected PDFs, PDFs with embedded files, and image-only/scanned
-    pages fail closed rather than returning a document that may still leak data.
+    Extractable text is mapped directly to PDF coordinates. Raster regions are
+    rendered locally and inspected with Tesseract OCR. Password-protected PDFs
+    and PDFs with embedded files fail closed.
     """
     import pymupdf as fitz
 
@@ -103,42 +220,32 @@ def sanitize_pdf_file(
                 f"PDF contains {embedded_count} embedded file(s); embedded content must be sanitized separately"
             )
 
-        extractable_chars = 0
         for page_index, page in enumerate(doc, 1):
-            text, char_map = _pdf_page_character_map(page)
-            visible_chars = [item for item in char_map if item["bbox"] is not None and item["char"].strip()]
-            extractable_chars += len(visible_chars)
-            if not visible_chars and page.get_images(full=True):
-                raise ValueError(
-                    f"PDF page {page_index} appears image-only/scanned; OCR support is required before sanitization"
-                )
-
-            _, ranges = _collect_sanitize_ranges(text, rules, classify_rule)
-            if not ranges:
+            native_redactions, native_total = _add_native_pdf_redactions(
+                page,
+                page_index,
+                rules,
+                audit,
+                audit_name,
+                classify_rule,
+                audit_add,
+            )
+            ocr_redactions, ocr_total, _ = _add_ocr_pdf_redactions(
+                page,
+                page_index,
+                rules,
+                audit,
+                audit_name,
+                classify_rule,
+                audit_add,
+            )
+            total += native_total + ocr_total
+            all_redactions = native_redactions + ocr_redactions
+            if not all_redactions:
                 continue
 
-            page_redactions: list[tuple[object, str]] = []
-            for start, end, kind in ranges:
-                segment = char_map[start:end]
-                by_line: dict[int, list[dict]] = {}
-                for item in segment:
-                    if item["bbox"] is None:
-                        continue
-                    by_line.setdefault(int(item["line"]), []).append(item)
-                if not by_line:
-                    raise ValueError(
-                        f"PDF sanitization could not safely map a match to page coordinates on page {page_index}"
-                    )
-                for line_items in by_line.values():
-                    boxes = [item["bbox"] for item in line_items if item["bbox"] is not None]
-                    rect = _rect_union(fitz, boxes)
-                    overlay = "X" * len(line_items)
-                    page_redactions.append((rect, overlay))
-                audit_add(audit, audit_name, kind, 1, f"Page {page_index}", "")
-                total += 1
-
-            for rect, overlay in page_redactions:
-                font_size = max(5.0, min(11.0, float(rect.height) * 0.75))
+            for rect, overlay in all_redactions:
+                font_size = max(5.0, min(11.0, float(rect.height) * 0.72))
                 page.add_redact_annot(
                     rect,
                     text=overlay,
@@ -148,13 +255,9 @@ def sanitize_pdf_file(
                     text_color=(0, 0, 0),
                     cross_out=False,
                 )
-            # Preserve images/vector artwork where possible while permanently removing text.
-            page.apply_redactions(images=0, graphics=0, text=0)
-
-        if extractable_chars == 0 and len(doc) > 0:
-            raise ValueError(
-                f"PDF contains no extractable text: {fpath.name}. OCR support is required for scanned/image PDFs."
-            )
+            # OCR redactions must overwrite the underlying image pixels. Native-
+            # only redactions preserve raster artwork outside the redaction area.
+            page.apply_redactions(images=2 if ocr_redactions else 0, graphics=0, text=0)
 
         metadata = dict(doc.metadata or {})
         changed_metadata = False
@@ -176,7 +279,6 @@ def sanitize_pdf_file(
         doc.close()
 
     try:
-        # A successful reopen catches structural corruption before replacing the source.
         with fitz.open(tmp_out) as check:
             if check.needs_pass:
                 raise ValueError("Sanitized PDF unexpectedly requires a password")
@@ -277,6 +379,21 @@ def _process_word_xml_part(
                 "",
             )
 
+    # Drawing alt-text can also contain hostnames, case names or other sensitive
+    # identifiers even when it is not visible on the page.
+    for element in root.iter():
+        for attr_name, value in list(element.attrib.items()):
+            local = _xml_local_name(attr_name)
+            if local not in {"descr", "title"} or not value:
+                continue
+            sanitized, count, counts = sanitize_content(value, rules)
+            if not count:
+                continue
+            element.set(attr_name, sanitized)
+            total += count
+            for kind, kind_count in counts.items():
+                audit_add(audit, audit_name, kind, kind_count, f"{label} image alt text", "")
+
     return etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=None), total, paragraph_count
 
 
@@ -348,20 +465,20 @@ def sanitize_docx_file(
     audit: dict,
     audit_name: str,
     sanitize_content: SanitizeContent,
+    classify_rule: ClassifyRule,
     audit_add: AuditAdd,
 ) -> int:
-    """Sanitize DOCX text, headers/footers, tables, comments and metadata.
+    """Sanitize DOCX text, metadata and embedded raster images with local OCR.
 
-    Embedded OLE/files and macro payloads fail closed. Visible text inside images
-    is not OCR'd; an image-only DOCX fails closed.
+    Embedded OLE/files and macro payloads still fail closed. Supported raster
+    images under word/media are OCR-sanitized and have their image metadata
+    stripped before being written back to the DOCX package.
     """
     from docx import Document
 
     fpath = Path(fpath)
     tmp_out = fpath.with_suffix(fpath.suffix + ".sanit.tmp")
     total = 0
-    textual_paragraphs = 0
-    has_media = False
 
     try:
         with zipfile.ZipFile(fpath, "r") as src:
@@ -370,14 +487,13 @@ def sanitize_docx_file(
                 raise ValueError("DOCX contains embedded/OLE files; embedded content must be sanitized separately")
             if any(name.endswith("vbaProject.bin") for name in names):
                 raise ValueError("Macro-enabled Word content is not supported by the DOCX sanitizer")
-            has_media = any(name.startswith("word/media/") for name in names)
 
             with zipfile.ZipFile(tmp_out, "w", compression=zipfile.ZIP_DEFLATED) as dst:
                 for info in src.infolist():
                     data = src.read(info.filename)
                     name = info.filename
                     if name.startswith("word/") and name.endswith(".xml"):
-                        data, count, paragraphs = _process_word_xml_part(
+                        data, count, _ = _process_word_xml_part(
                             data,
                             name,
                             rules,
@@ -387,7 +503,6 @@ def sanitize_docx_file(
                             audit_add,
                         )
                         total += count
-                        textual_paragraphs += paragraphs
                     elif name in {"docProps/core.xml", "docProps/custom.xml"}:
                         data, count = _process_metadata_xml(
                             data,
@@ -410,12 +525,24 @@ def sanitize_docx_file(
                             audit_add,
                         )
                         total += count
+                    elif name.startswith("word/media/") and not name.endswith("/"):
+                        suffix = Path(name).suffix.lower()
+                        if suffix not in IMAGE_EXTS:
+                            raise ValueError(
+                                f"DOCX contains unsupported embedded image type {suffix or '(no extension)'}: {name}"
+                            )
+                        data, count = sanitize_image_bytes(
+                            data,
+                            suffix,
+                            rules,
+                            audit,
+                            audit_name,
+                            classify_rule,
+                            audit_add,
+                            location_prefix=f"DOCX image {Path(name).name} OCR",
+                        )
+                        total += count
                     dst.writestr(info, data)
-
-        if textual_paragraphs == 0 and has_media:
-            raise ValueError(
-                f"DOCX appears image-only: {fpath.name}. OCR support is required before sanitization."
-            )
 
         # Validate that Microsoft Word's normal document model can reopen the package.
         Document(tmp_out)
