@@ -1,0 +1,109 @@
+name: Ubuntu Compatibility and Offline Bundle
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Ubuntu 22.04 / system Python 3.10
+            os: ubuntu-22.04
+            python: "3.10"
+          - name: Ubuntu 24.04 / system Python 3.12
+            os: ubuntu-24.04
+            python: "3.12"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Confirm operating system and default Python
+        shell: bash
+        run: |
+          cat /etc/os-release
+          python3 --version
+          python3 - <<PY
+          import sys
+          expected = tuple(map(int, "${{ matrix.python }}".split(".")))
+          actual = sys.version_info[:2]
+          assert actual == expected, f"Expected system Python {expected}, found {actual}"
+          PY
+
+      - name: Install OS prerequisites
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-venv
+          if apt-cache show p7zip-full >/dev/null 2>&1; then
+            sudo apt-get install -y p7zip-full
+          elif apt-cache show 7zip >/dev/null 2>&1; then
+            sudo apt-get install -y 7zip
+          fi
+
+      - name: Create clean virtual environment
+        shell: bash
+        run: |
+          rm -rf .venv
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+
+      - name: Install pinned dependencies
+        shell: bash
+        run: |
+          .venv/bin/python -m pip install -r requirements.txt -r requirements-ci.txt
+          .venv/bin/python -m pip freeze
+
+      - name: Verify deployment environment
+        run: .venv/bin/python scripts/verify_environment.py
+
+      - name: Run v2 functional smoke tests
+        run: .venv/bin/python -m pytest -q tests
+
+      - name: Confirm command-line entry point
+        run: .venv/bin/python main.py --help
+
+  offline-bundle:
+    name: Prove offline installation bundle
+    runs-on: ubuntu-24.04
+    needs: compatibility
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare builder
+        run: |
+          python3 -m pip install --upgrade pip
+          mkdir -p dist
+
+      - name: Build wheelhouse and deployment archive
+        run: bash scripts/build_offline_bundle.sh
+
+      - name: Install bundle with network package access disabled
+        shell: bash
+        run: |
+          mkdir -p /tmp/sanitization-offline-test
+          tar -xzf dist/SanitizationApp-v2-offline-*.tar.gz -C /tmp/sanitization-offline-test
+          cd /tmp/sanitization-offline-test/SanitizationApp-v2-offline-*
+          PIP_NO_INDEX=1 bash scripts/install_offline.sh
+          .venv/bin/python main.py --help
+
+      - name: Upload tested offline package
+        uses: actions/upload-artifact@v4
+        with:
+          name: SanitizationApp-v2-Ubuntu24-offline
+          path: |
+            dist/SanitizationApp-v2-offline-*.tar.gz
+            dist/SanitizationApp-v2-offline-*.tar.gz.sha256
+          if-no-files-found: error
