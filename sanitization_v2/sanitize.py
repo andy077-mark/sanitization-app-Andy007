@@ -18,6 +18,8 @@ from pathlib import Path, PurePosixPath
 
 from . import config as cfg
 from . import rules as rules_module
+from .document_sanitizers import sanitize_docx_file as sanitize_docx_document
+from .document_sanitizers import sanitize_pdf_file as sanitize_pdf_document
 from .text_encoding import TEXT_LIKE_EXTS, detect_text_encoding, is_known_binary_extension
 
 
@@ -185,8 +187,27 @@ def sanitize_xls_file(fpath: Path, rules: list[str], audit: dict, audit_name: st
 
 
 def sanitize_file_if_supported(fpath: Path, rules: list[str], audit: dict, audit_name: str) -> int:
-    """Sanitize supported spreadsheet/text formats or fail closed for binary files."""
+    """Sanitize supported documents, spreadsheets and text; fail closed otherwise."""
     ext = fpath.suffix.lower()
+    if ext == ".pdf":
+        return sanitize_pdf_document(
+            fpath,
+            rules,
+            audit,
+            audit_name,
+            sanitize_content,
+            classify_rule,
+            audit_add,
+        )
+    if ext == ".docx":
+        return sanitize_docx_document(
+            fpath,
+            rules,
+            audit,
+            audit_name,
+            sanitize_content,
+            audit_add,
+        )
     if ext == ".xlsx":
         return sanitize_xlsx_file(fpath, rules, audit, audit_name)
     if ext == ".xls":
