@@ -51,6 +51,15 @@ jobs:
             sudo apt-get install -y 7zip
           fi
 
+      - name: Validate deployment script syntax
+        shell: bash
+        run: |
+          bash -n scripts/deploy_staging.sh
+          bash -n scripts/build_offline_bundle.sh
+          bash -n scripts/install_offline.sh
+          bash -n scripts/start_production.sh
+          python3 -m py_compile scripts/staging_acceptance.py
+
       - name: Create clean virtual environment
         shell: bash
         run: |
@@ -72,6 +81,9 @@ jobs:
 
       - name: Validate Gunicorn production configuration
         run: .venv/bin/gunicorn --check-config --config gunicorn.conf.py wsgi:application
+
+      - name: Confirm staging acceptance checker CLI
+        run: .venv/bin/python scripts/staging_acceptance.py --help
 
       - name: Confirm command-line entry point
         run: .venv/bin/python main.py --help
@@ -99,8 +111,12 @@ jobs:
           mkdir -p /tmp/sanitization-offline-test
           tar -xzf dist/SanitizationApp-v2.1-offline-*.tar.gz -C /tmp/sanitization-offline-test
           cd /tmp/sanitization-offline-test/SanitizationApp-v2.1-offline-*
-          PIP_NO_INDEX=1 bash scripts/install_offline.sh
+          test -f scripts/deploy_staging.sh
+          test -f scripts/staging_acceptance.py
+          bash -n scripts/deploy_staging.sh
+          .venv/bin/python --version >/dev/null 2>&1 || PIP_NO_INDEX=1 bash scripts/install_offline.sh
           .venv/bin/python main.py --help
+          .venv/bin/python scripts/staging_acceptance.py --help
           .venv/bin/gunicorn --check-config --config gunicorn.conf.py wsgi:application
 
       - name: Upload tested offline package
