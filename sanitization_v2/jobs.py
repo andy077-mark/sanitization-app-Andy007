@@ -6,6 +6,8 @@ import logging
 import os
 import shutil
 import tempfile
+import time
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -86,6 +88,44 @@ def _session_set(job_id: str, **fields) -> None:
     info.update(fields)
 
 
+def _zip_compression_level() -> int:
+    """Return a speed-oriented ZIP level while allowing local tuning.
+
+    Level 1 is deliberately the default: SOC log bundles favor fast completion
+    over maximum compression. Set SANIT_ZIP_COMPRESSION_LEVEL=0..9 if required.
+    """
+    try:
+        value = int(os.environ.get("SANIT_ZIP_COMPRESSION_LEVEL", "1"))
+    except ValueError:
+        value = 1
+    return max(0, min(value, 9))
+
+
+def _package_outputs(job_id: str, sanitized_root: Path, report: Path) -> Path:
+    """Create the downloadable package directly from sanitized outputs.
+
+    The previous implementation copied the entire sanitized tree into another
+    temporary Bundle directory before ZIP creation. For large SOC logs that
+    doubled disk I/O. Writing the ZIP directly avoids that extra full-file copy.
+    """
+    bundle = cfg.OUTPUT / f"Sanitized_Package_{job_id}.zip"
+    level = _zip_compression_level()
+    with zipfile.ZipFile(
+        bundle,
+        mode="w",
+        compression=zipfile.ZIP_DEFLATED,
+        compresslevel=level,
+        allowZip64=True,
+    ) as archive:
+        for path in sanitized_root.rglob("*"):
+            if not path.is_file():
+                continue
+            relative = path.relative_to(sanitized_root).as_posix()
+            archive.write(path, arcname=f"Sanitized_Files/{relative}")
+        archive.write(report, arcname=report.name)
+    return bundle
+
+
 def process_file(
     job_id: str,
     upload_paths: list[Path],
@@ -97,6 +137,7 @@ def process_file(
     """Process all uploaded files as one job and produce one ZIP package + Excel report."""
     cfg.sem.acquire()
     started = datetime.now()
+    perf_started = time.perf_counter()
     job_tmp: Path | None = None
     try:
         _session_set(job_id, status="Processing", progress=5)
@@ -126,7 +167,7 @@ def process_file(
                 for kind, count in path_counts.items():
                     audit_add(audit, audit_name, f"Path: {kind}", count, "Path", rel_safe.as_posix())
 
-            file_started = datetime.now()
+            file_started = time.perf_counter()
             if is_archive_name(original):
                 original_ext = get_archive_ext(original)
                 extracted = Path(tempfile.mkdtemp(prefix="archive_", dir=job_tmp))
@@ -144,11 +185,19 @@ def process_file(
                     stem, ext = os.path.splitext(safe_name)
                     candidate = target_parent / f"{stem}_{counter}{ext}"
                     counter += 1
-                shutil.copy2(up, candidate)
+
+                # Uploads and the job workspace live under the same application
+                # filesystem. Moving is normally a metadata operation and avoids
+                # a complete extra copy of large logs before sanitization.
+                try:
+                    shutil.move(str(up), str(candidate))
+                except OSError:
+                    # Safe fallback for unusual cross-filesystem deployments.
+                    shutil.copy2(up, candidate)
                 replacements += sanitize_file_if_supported(candidate, active_rules, audit, audit_name)
                 out = candidate
 
-            elapsed = (datetime.now() - file_started).total_seconds()
+            elapsed = time.perf_counter() - file_started
             try:
                 output_rel = out.relative_to(sanitized_root).as_posix()
             except ValueError:
@@ -158,21 +207,19 @@ def process_file(
             progress = 10 + int(((idx + 1) / file_count) * 70)
             _session_set(job_id, progress=progress, current_file=rel_raw)
 
+        processing_elapsed = time.perf_counter() - perf_started
+        _session_set(job_id, progress=85, current_file="Generating audit report")
+        report_started = time.perf_counter()
+        duration_so_far = (datetime.now() - started).total_seconds()
+        report = create_audit_report(job_id, stats, audit, total_replacements, duration_so_far)
+        report_elapsed = time.perf_counter() - report_started
+
+        _session_set(job_id, progress=92, current_file="Packaging sanitized outputs")
+        package_started = time.perf_counter()
+        bundle = _package_outputs(job_id, sanitized_root, report)
+        package_elapsed = time.perf_counter() - package_started
+
         duration = (datetime.now() - started).total_seconds()
-        report = create_audit_report(job_id, stats, audit, total_replacements, duration)
-
-        bundle_root = job_tmp / "Bundle"
-        bundle_root.mkdir()
-        shutil.copytree(sanitized_root, bundle_root / "Sanitized_Files", dirs_exist_ok=True)
-        shutil.copy2(report, bundle_root / report.name)
-        bundle = Path(
-            shutil.make_archive(
-                str(cfg.OUTPUT / f"Sanitized_Package_{job_id}"),
-                "zip",
-                root_dir=bundle_root,
-            )
-        )
-
         token = cfg.SESSIONS[job_id]["token"]
         completed = datetime.now().isoformat(timespec="seconds")
         session_update = {
@@ -210,6 +257,12 @@ def process_file(
                         "ip": ip,
                         "duration": round(duration, 3),
                         "replacements": total_replacements,
+                        "performance": {
+                            "processing_seconds": round(processing_elapsed, 3),
+                            "report_seconds": round(report_elapsed, 3),
+                            "packaging_seconds": round(package_elapsed, 3),
+                            "zip_compression_level": _zip_compression_level(),
+                        },
                     }
                 )
                 + "\n"
