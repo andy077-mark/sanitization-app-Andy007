@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
-"""Pre-deployment verification for SOC Data Sanitization Platform v2."""
+"""Pre-deployment verification for SOC Data Sanitization Platform v2.1."""
 from __future__ import annotations
 
 import importlib.metadata as metadata
+import os
 import platform
 import shutil
 import sqlite3
 import sys
 from pathlib import Path
 
-# Allow this script to import the application when executed as
-# `python scripts/verify_environment.py` from a fresh checkout/offline bundle.
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -21,6 +20,7 @@ EXPECTED = {
     "openpyxl": "3.1.5",
     "xlrd": "2.0.2",
     "xlwt": "1.3.0",
+    "gunicorn": "23.0.0",
 }
 
 
@@ -39,8 +39,8 @@ def os_release() -> str:
 def main() -> int:
     failures: list[str] = []
     warnings: list[str] = []
-    print("SOC Data Sanitization Platform v2 - Environment Check")
-    print("=" * 62)
+    print("SOC Data Sanitization Platform v2.1 - Environment Check")
+    print("=" * 66)
     print(f"OS:       {os_release()}")
     print(f"Platform: {platform.machine()} / {platform.system()}")
     print(f"Python:   {platform.python_version()}")
@@ -59,6 +59,7 @@ def main() -> int:
             failures.append(f"Missing Python package: {package}=={expected}")
 
     try:
+        from sanitization_v2 import auth
         from sanitization_v2 import config as cfg
 
         for name in ("UPLOAD", "OUTPUT", "LOGS", "TEMP", "DATA"):
@@ -69,9 +70,10 @@ def main() -> int:
             probe.unlink()
             print(f"Writable:  {name:<8} {path}")
 
-        template = cfg.BASE / "templates" / "index.html"
-        if not template.is_file():
-            failures.append(f"Missing UI template: {template}")
+        for relative in ("templates/index.html", "templates/login.html", "gunicorn.conf.py", "wsgi.py"):
+            target = cfg.BASE / relative
+            if not target.is_file():
+                failures.append(f"Missing production file: {target}")
 
         rules = cfg.BASE / "bad_words.txt"
         if not rules.is_file():
@@ -80,7 +82,22 @@ def main() -> int:
         cfg.init_db()
         with sqlite3.connect(cfg.DB_PATH) as connection:
             connection.execute("SELECT 1").fetchone()
+            connection.execute("SELECT COUNT(*) FROM users").fetchone()
         print(f"SQLite:    OK ({cfg.DB_PATH})")
+
+        secret = cfg.get_session_secret()
+        if len(secret) < 32:
+            failures.append("Session secret is too short")
+        else:
+            print("Session:   stable secret ready")
+
+        users = auth.list_users()
+        admins = [u for u in users if u.get("role") == "admin" and u.get("enabled")]
+        print(f"Users:     {len(users)} configured / {len(admins)} enabled admin(s)")
+        if os.environ.get("SANIT_REQUIRE_ADMIN", "0") == "1" and not admins:
+            failures.append("No enabled administrator exists; create one before starting production service")
+        elif not admins:
+            warnings.append("No enabled administrator exists yet")
 
         cfg.ensure_selfsigned_certs()
         cert = cfg.BASE / "certs" / "cert.pem"
@@ -103,7 +120,7 @@ def main() -> int:
     except Exception as exc:
         failures.append(f"Application environment check failed: {exc}")
 
-    print("-" * 62)
+    print("-" * 66)
     for warning in warnings:
         print(f"WARNING: {warning}")
     if failures:
