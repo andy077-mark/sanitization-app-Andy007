@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import bz2
 import gzip
+import io
 import lzma
 import os
 import re
@@ -17,6 +18,7 @@ from pathlib import Path, PurePosixPath
 
 from . import config as cfg
 from . import rules as rules_module
+from .text_encoding import TEXT_LIKE_EXTS, detect_text_encoding, is_known_binary_extension
 
 
 def x_replacer(match):
@@ -87,26 +89,51 @@ def sanitize_content(text: str, rules: list[str] | None = None):
 
 
 def is_text(fp: Path) -> bool:
-    try:
-        with open(fp, "r", encoding="utf-8") as handle:
-            handle.read(4096)
-        return True
-    except (UnicodeDecodeError, OSError):
+    """Return True only when the file can be decoded safely as supported text."""
+    if is_known_binary_extension(fp):
         return False
+    return detect_text_encoding(fp) is not None
 
 
-def sanitize_text_file(fpath: Path, rules: list[str], audit: dict, audit_name: str) -> int:
+def sanitize_text_file(
+    fpath: Path,
+    rules: list[str],
+    audit: dict,
+    audit_name: str,
+    encoding_info: tuple[str, bytes] | None = None,
+) -> int:
+    """Sanitize a text file while preserving its detected character encoding/BOM."""
+    detected = encoding_info or detect_text_encoding(fpath)
+    if detected is None:
+        raise ValueError(f"Unsupported text encoding or binary content: {fpath.name}")
+
+    codec, bom = detected
     total = 0
     tmp_out = fpath.with_suffix(fpath.suffix + ".sanit.tmp")
-    with open(fpath, "r", encoding="utf-8", errors="ignore") as src, open(tmp_out, "w", encoding="utf-8") as dst:
-        for line_no, line in enumerate(src, 1):
-            sanitized, n, counts = sanitize_content(line, rules)
-            dst.write(sanitized)
-            total += n
-            for kind, count in counts.items():
-                audit_add(audit, audit_name, kind, count, f"Line {line_no}", sanitized)
-    tmp_out.replace(fpath)
-    return total
+    try:
+        with open(fpath, "rb") as src_raw, open(tmp_out, "wb") as dst_raw:
+            if bom:
+                actual_bom = src_raw.read(len(bom))
+                if actual_bom != bom:
+                    raise ValueError(f"Text encoding marker changed while reading: {fpath.name}")
+                dst_raw.write(bom)
+
+            # newline="" keeps the input newline convention instead of silently
+            # converting CRLF/LF while the content itself is sanitized.
+            with io.TextIOWrapper(src_raw, encoding=codec, errors="strict", newline="") as src, io.TextIOWrapper(
+                dst_raw, encoding=codec, errors="strict", newline=""
+            ) as dst:
+                for line_no, line in enumerate(src, 1):
+                    sanitized, n, counts = sanitize_content(line, rules)
+                    dst.write(sanitized)
+                    total += n
+                    for kind, count in counts.items():
+                        audit_add(audit, audit_name, kind, count, f"Line {line_no}", sanitized)
+        tmp_out.replace(fpath)
+        return total
+    except Exception:
+        tmp_out.unlink(missing_ok=True)
+        raise
 
 
 def sanitize_xlsx_file(fpath: Path, rules: list[str], audit: dict, audit_name: str) -> int:
@@ -158,14 +185,28 @@ def sanitize_xls_file(fpath: Path, rules: list[str], audit: dict, audit_name: st
 
 
 def sanitize_file_if_supported(fpath: Path, rules: list[str], audit: dict, audit_name: str) -> int:
+    """Sanitize supported spreadsheet/text formats or fail closed for binary files."""
     ext = fpath.suffix.lower()
     if ext == ".xlsx":
         return sanitize_xlsx_file(fpath, rules, audit, audit_name)
     if ext == ".xls":
         return sanitize_xls_file(fpath, rules, audit, audit_name)
-    if ext in cfg.TEXT_EXTS or is_text(fpath):
-        return sanitize_text_file(fpath, rules, audit, audit_name)
-    return 0
+
+    if is_known_binary_extension(fpath):
+        raise ValueError(
+            f"Unsupported binary/document file type {ext or '(no extension)'}: {fpath.name}. "
+            "A dedicated format sanitizer is required."
+        )
+
+    encoding_info = detect_text_encoding(fpath)
+    if ext in cfg.TEXT_EXTS or ext in TEXT_LIKE_EXTS or encoding_info is not None:
+        if encoding_info is None:
+            raise ValueError(f"Unsupported text encoding or binary content: {fpath.name}")
+        return sanitize_text_file(fpath, rules, audit, audit_name, encoding_info)
+
+    raise ValueError(
+        f"Unsupported or binary file type {ext or '(no extension)'}: {fpath.name}"
+    )
 
 
 def sanitize_filename_windows(name: str):
