@@ -56,19 +56,21 @@ def test_ui_health_and_button_contract():
     assert response.status_code == 200
     html = response.get_data(as_text=True)
     for required in (
-        'data-v="dashboard"',
-        'data-v="sanitize"',
-        'data-v="history"',
-        'data-v="rules"',
-        'id="browseBtn"',
-        'id="folderBtn"',
-        'id="clearBtn"',
-        'id="startBtn"',
-        'id="exportBtn"',
-        'id="addRuleBtn"',
-        'id="saveRulesBtn"',
-        'id="clearRulesBtn"',
-        'id="replaceRulesBtn"',
+        'data-view="dashboard"',
+        'data-view="sanitize"',
+        'data-view="history"',
+        'data-view="rules"',
+        'id="browse"',
+        'id="browseFolder"',
+        'id="clear"',
+        'id="start"',
+        'id="refreshJobs"',
+        'id="exportJobs"',
+        'id="addRule"',
+        'id="saveRules"',
+        'id="clearRules"',
+        'id="replaceRules"',
+        'id="healthBtn"',
     ):
         assert required in html
 
