@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import importlib.metadata as metadata
-import os
 import platform
 import shutil
 import sqlite3
 import sys
 from pathlib import Path
+
+# Allow this script to import the application when executed as
+# `python scripts/verify_environment.py` from a fresh checkout/offline bundle.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 EXPECTED = {
     "Flask": "3.1.3",
