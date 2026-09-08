@@ -51,7 +51,7 @@ jobs:
             sudo apt-get install -y 7zip
           fi
 
-      - name: Validate deployment script syntax
+      - name: Validate deployment and benchmark script syntax
         shell: bash
         run: |
           bash -n scripts/deploy_staging.sh
@@ -59,6 +59,7 @@ jobs:
           bash -n scripts/install_offline.sh
           bash -n scripts/start_production.sh
           python3 -m py_compile scripts/staging_acceptance.py
+          python3 -m py_compile scripts/benchmark_performance.py
 
       - name: Create clean virtual environment
         shell: bash
@@ -84,6 +85,9 @@ jobs:
 
       - name: Confirm staging acceptance checker CLI
         run: .venv/bin/python scripts/staging_acceptance.py --help
+
+      - name: Confirm performance benchmark CLI
+        run: .venv/bin/python scripts/benchmark_performance.py --help
 
       - name: Confirm command-line entry point
         run: .venv/bin/python main.py --help
@@ -113,10 +117,12 @@ jobs:
           cd /tmp/sanitization-offline-test/SanitizationApp-v2.1-offline-*
           test -f scripts/deploy_staging.sh
           test -f scripts/staging_acceptance.py
+          test -f scripts/benchmark_performance.py
           bash -n scripts/deploy_staging.sh
           .venv/bin/python --version >/dev/null 2>&1 || PIP_NO_INDEX=1 bash scripts/install_offline.sh
           .venv/bin/python main.py --help
           .venv/bin/python scripts/staging_acceptance.py --help
+          .venv/bin/python scripts/benchmark_performance.py --help
           .venv/bin/gunicorn --check-config --config gunicorn.conf.py wsgi:application
 
       - name: Upload tested offline package
