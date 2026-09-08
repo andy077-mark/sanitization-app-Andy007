@@ -20,7 +20,7 @@ v2.1 uses local application accounts stored as password hashes in `data/jobs.db`
 - Start sanitization jobs
 - Monitor processing
 - View persistent job history
-- Download sanitized packages and Excel reports
+- Download sanitized outputs and Excel reports
 - View active-rule count
 
 ### Administrator
@@ -34,6 +34,69 @@ Includes all Analyst permissions plus:
 - Replace rules from TXT
 
 Rules endpoints are protected server-side; hiding the UI is not the security control.
+
+## Output modes
+
+The production application has two output modes.
+
+### Direct single-file output
+
+When a user selects exactly one file directly with **Browse Files**, the sanitized file is returned directly rather than wrapped in a ZIP.
+
+Example:
+
+```text
+security.log
+        ↓
+security_SANITIZED.log
+Sanitization_Report_<job_id>.xlsx
+```
+
+A directly selected archive is returned as its sanitized/repacked archive with `_SANITIZED` added to the filename.
+
+### Folder / multi-file batch output
+
+When the job contains multiple files, or when files were selected using **Browse Folder**, the application returns a ZIP package so relative folder structure is retained.
+
+Example:
+
+```text
+Sanitized_Package_<job_id>.zip
+├── Sanitized_Files/
+│   └── Case-01/
+│       ├── notes.txt
+│       └── Logs/
+│           └── Windows/
+│               └── Security/
+│                   └── security.log
+└── Sanitization_Report_<job_id>.xlsx
+```
+
+The Excel report is also exposed as a separate download.
+
+A folder upload remains a folder/batch job even if the selected folder contains only one file. Completely empty folders cannot be preserved through normal browser folder selection because the browser supplies file objects and relative paths, not standalone empty-directory objects.
+
+## Excel audit report behavior
+
+Every successful job creates:
+
+```text
+Sanitization_Report_<job_id>.xlsx
+```
+
+The workbook contains **Summary** and **Audit** sheets.
+
+The Audit sheet columns are:
+
+- **File Name**
+- **Match Type**
+- **Occurrences**
+- **Location** — line, spreadsheet cell, filename or path where available
+- **Keywords** — the configured Rules Library keyword/regular expression that triggered the match
+
+The **Keywords** value is intentionally stored unsanitized in the audit report. It represents the configured rule exactly as entered by the Administrator.
+
+The application does **not** reconstruct the original matched source value for the Excel report. The sanitized output itself continues to replace matched source content with `X` characters.
 
 ## Bootstrap accounts
 
@@ -108,13 +171,18 @@ The suite covers:
 - CSRF enforcement
 - Security headers
 - Authenticated `/health` and public minimal `/healthz`
+- Direct single-file sanitized download
+- `_SANITIZED` filename behavior
 - Multi-file upload as one job
 - Folder-relative paths
-- Sanitized ZIP package creation
+- Nested folder-path preservation
+- Folder/multi-file ZIP package creation
+- Folder upload containing only one file remains packaged
 - Excel audit report creation
+- Excel **Keywords** column contains the configured rule text unsanitized
+- Sanitized output does not contain the configured matched test value
 - Persistent `/jobs` history and job creator
 - Download authorization links
-- Verification that the Excel report does not reproduce the test sensitive value
 - Malicious ZIP path traversal rejection
 - Correct `Failed` job persistence
 
@@ -348,21 +416,27 @@ Before production promotion, verify:
 5. Administrator can manage Rules Library.
 6. Logout invalidates the application session.
 7. Browse Files works.
-8. Browse Folder preserves relative structure.
-9. Clear Selection works.
-10. Start Sanitization creates one batch job.
-11. Text/log sanitization removes configured test patterns.
-12. `.xlsx` sanitization works.
-13. ZIP processing works.
-14. `.7z`/`.rar` works when approved 7-Zip is present.
-15. Sanitized Package downloads successfully.
-16. Excel Audit Report downloads successfully and contains no original sensitive values.
-17. Job History survives application restart and records job creator.
-18. Invalid/corrupt archives become `Failed` instead of hanging.
-19. `/healthz` returns `status: ok`.
-20. `systemctl restart sanitization-app` restores service successfully.
-21. Service starts automatically after a test reboot.
-22. Approved TLS certificate is presented in production.
+8. One directly selected file downloads as `*_SANITIZED.<ext>` rather than an unnecessary batch ZIP.
+9. The Excel report remains available separately for a direct single-file job.
+10. Browse Folder preserves relative nested folder structure.
+11. A folder upload is returned as a ZIP package, including when that folder contains only one file.
+12. Multi-file selection is returned as one ZIP package.
+13. Clear Selection works.
+14. Start Sanitization creates one auditable job.
+15. Text/log sanitization removes configured test matches from the sanitized output.
+16. `.xlsx` sanitization works.
+17. ZIP processing works.
+18. `.7z`/`.rar` works when approved 7-Zip is present.
+19. Excel Audit Report downloads successfully.
+20. Excel Audit sheet contains `File Name`, `Match Type`, `Occurrences`, `Location`, and `Keywords`.
+21. `Keywords` shows the configured rule exactly as defined and is intentionally not sanitized.
+22. The report does not reconstruct the original matched source value beyond the configured rule text.
+23. Job History survives application restart and records job creator.
+24. Invalid/corrupt archives become `Failed` instead of hanging.
+25. `/healthz` returns `status: ok`.
+26. `systemctl restart sanitization-app` restores service successfully.
+27. Service starts automatically after a test reboot.
+28. Approved TLS certificate is presented in production.
 
 ## Remaining enterprise enhancement
 
