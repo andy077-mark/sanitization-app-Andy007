@@ -23,6 +23,7 @@ cp "$ROOT/bad_words.txt" "$STAGE/"
 cp "$ROOT/requirements.txt" "$STAGE/"
 cp "$ROOT/README.md" "$STAGE/"
 [[ -f "$ROOT/DEPLOYMENT.md" ]] && cp "$ROOT/DEPLOYMENT.md" "$STAGE/"
+[[ -f "$ROOT/PERFORMANCE_BENCHMARK.md" ]] && cp "$ROOT/PERFORMANCE_BENCHMARK.md" "$STAGE/"
 [[ -f "$ROOT/start.sh" ]] && cp "$ROOT/start.sh" "$STAGE/"
 [[ -f "$ROOT/start.bat" ]] && cp "$ROOT/start.bat" "$STAGE/"
 cp -R "$ROOT/templates" "$STAGE/"
@@ -33,8 +34,9 @@ cp "$ROOT/scripts/verify_environment.py" "$STAGE/scripts/"
 cp "$ROOT/scripts/start_production.sh" "$STAGE/scripts/"
 cp "$ROOT/scripts/deploy_staging.sh" "$STAGE/scripts/"
 cp "$ROOT/scripts/staging_acceptance.py" "$STAGE/scripts/"
+cp "$ROOT/scripts/benchmark_performance.py" "$STAGE/scripts/"
 
-chmod +x "$STAGE/scripts/"*.sh "$STAGE/scripts/staging_acceptance.py"
+chmod +x "$STAGE/scripts/"*.sh "$STAGE/scripts/staging_acceptance.py" "$STAGE/scripts/benchmark_performance.py"
 
 if [[ -n "${SANIT_7ZIP_BINARY:-}" ]]; then
   if [[ ! -f "$SANIT_7ZIP_BINARY" ]]; then
@@ -74,6 +76,10 @@ Then run acceptance as both roles:
 
   /opt/sanitization-app/.venv/bin/python /opt/sanitization-app/scripts/staging_acceptance.py --url https://127.0.0.1:8443 --username <admin> --role admin
   /opt/sanitization-app/.venv/bin/python /opt/sanitization-app/scripts/staging_acceptance.py --url https://127.0.0.1:8443 --username <analyst> --role analyst
+
+Performance baseline after staging acceptance:
+
+  sudo -u sanitizer /opt/sanitization-app/.venv/bin/python /opt/sanitization-app/scripts/benchmark_performance.py --sizes-mb 100 500
 
 Alternative manual installation:
 
