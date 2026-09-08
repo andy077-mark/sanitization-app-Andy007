@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import platform
+import secrets
 import shutil
 import sqlite3
 import uuid
@@ -52,6 +53,11 @@ TOOLS = BASE / "tools" / "7zip"
 for directory in (UPLOAD, OUTPUT, LOGS, TEMP, DATA):
     directory.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA / "jobs.db"
+SESSION_SECRET_FILE = DATA / "session_secret.key"
+
+
+def now_iso() -> str:
+    return datetime.now().isoformat(timespec="seconds")
 
 
 def max_upload_label() -> str:
@@ -74,14 +80,52 @@ SESSIONS: dict[str, dict] = {}
 SEVEN_ZIP_EXE: Path | None = None
 
 
+def get_session_secret() -> str:
+    """Return a stable session key suitable for multi-threaded WSGI restarts.
+
+    Production may provide SANIT_SECRET_KEY. Otherwise a 256-bit key is created
+    once under data/session_secret.key with owner-only permissions.
+    """
+    configured = os.environ.get("SANIT_SECRET_KEY", "").strip()
+    if configured:
+        if len(configured) < 32:
+            raise RuntimeError("SANIT_SECRET_KEY must contain at least 32 characters")
+        return configured
+
+    SESSION_SECRET_FILE.parent.mkdir(parents=True, exist_ok=True)
+    if SESSION_SECRET_FILE.exists():
+        value = SESSION_SECRET_FILE.read_text("utf-8").strip()
+        if len(value) >= 32:
+            return value
+
+    value = secrets.token_hex(32)
+    try:
+        fd = os.open(SESSION_SECRET_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(value + "\n")
+    except FileExistsError:
+        value = SESSION_SECRET_FILE.read_text("utf-8").strip()
+    try:
+        SESSION_SECRET_FILE.chmod(0o600)
+    except OSError:
+        pass
+    if len(value) < 32:
+        raise RuntimeError("Persistent session secret could not be initialized")
+    return value
+
+
 def db_connect() -> sqlite3.Connection:
     con = sqlite3.connect(DB_PATH, timeout=30)
     con.row_factory = sqlite3.Row
     return con
 
 
+def _column_names(con: sqlite3.Connection, table: str) -> set[str]:
+    return {row["name"] for row in con.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
 def init_db() -> None:
-    """Initialize persistent history and close stale in-progress jobs after restart."""
+    """Initialize persistent jobs/users and close stale in-progress jobs after restart."""
     with db_lock, db_connect() as con:
         con.execute("PRAGMA journal_mode=WAL")
         con.execute(
@@ -99,12 +143,31 @@ def init_db() -> None:
                 duration REAL NOT NULL DEFAULT 0,
                 output_path TEXT,
                 report_path TEXT,
-                error TEXT
+                error TEXT,
+                created_by TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        job_columns = _column_names(con, "jobs")
+        if "created_by" not in job_columns:
+            con.execute("ALTER TABLE jobs ADD COLUMN created_by TEXT NOT NULL DEFAULT ''")
+
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                username TEXT PRIMARY KEY,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL CHECK(role IN ('analyst','admin')),
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_login TEXT
             )
             """
         )
         con.execute("CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC)")
-        now = datetime.now().isoformat(timespec="seconds")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_jobs_created_by ON jobs(created_by)")
+        now = now_iso()
         con.execute(
             "UPDATE jobs SET status='Failed', updated_at=?, completed_at=?, "
             "error=COALESCE(error, 'Interrupted by application restart') "
@@ -114,16 +177,22 @@ def init_db() -> None:
         con.commit()
 
 
-def db_create_job(job_id: str, filenames: list[str], ip: str | None, token: str) -> None:
-    now = datetime.now().isoformat(timespec="seconds")
+def db_create_job(
+    job_id: str,
+    filenames: list[str],
+    ip: str | None,
+    token: str,
+    created_by: str = "",
+) -> None:
+    now = now_iso()
     with db_lock, db_connect() as con:
         con.execute(
             """
             INSERT OR REPLACE INTO jobs
-            (job_id,status,created_at,updated_at,filenames,source_ip,token)
-            VALUES (?,?,?,?,?,?,?)
+            (job_id,status,created_at,updated_at,filenames,source_ip,token,created_by)
+            VALUES (?,?,?,?,?,?,?,?)
             """,
-            (job_id, "Queued", now, now, json.dumps(filenames), ip or "", token),
+            (job_id, "Queued", now, now, json.dumps(filenames), ip or "", token, created_by or ""),
         )
         con.commit()
 
@@ -131,10 +200,10 @@ def db_create_job(job_id: str, filenames: list[str], ip: str | None, token: str)
 def db_update_job(job_id: str, **fields) -> None:
     allowed = {
         "status", "completed_at", "filenames", "total_replacements", "duration",
-        "output_path", "report_path", "error", "source_ip", "token",
+        "output_path", "report_path", "error", "source_ip", "token", "created_by",
     }
     clean = {k: v for k, v in fields.items() if k in allowed}
-    clean["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    clean["updated_at"] = now_iso()
     columns = ", ".join(f"{k}=?" for k in clean)
     values = list(clean.values()) + [job_id]
     with db_lock, db_connect() as con:
@@ -170,6 +239,7 @@ def public_job(row: dict | None, include_token_links: bool = True) -> dict | Non
         "status": row.get("status"),
         "created_at": row.get("created_at"),
         "completed_at": row.get("completed_at"),
+        "created_by": row.get("created_by") or "",
         "filenames": filenames,
         "total_replacements": int(row.get("total_replacements") or 0),
         "duration": float(row.get("duration") or 0),
@@ -238,6 +308,11 @@ def ensure_selfsigned_certs() -> None:
         )
     )
     crt.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    try:
+        key.chmod(0o600)
+        crt.chmod(0o644)
+    except OSError:
+        pass
 
 
 def _mark_executable(path: Path) -> None:
