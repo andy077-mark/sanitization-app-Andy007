@@ -130,6 +130,14 @@ def index():
         return redirect(url_for("login", next="/"))
     csrf_token = auth.ensure_csrf_token()
     html = (cfg.BASE / "templates" / "index.html").read_text("utf-8")
+    # Keep the existing UI compatible while reflecting the direct-file behavior:
+    # one selected file downloads directly; folders/batches download as ZIP.
+    html = html.replace(
+        "One job creates one sanitized ZIP package and one Excel audit report.",
+        "Single files download directly; folders and batches are packaged as ZIP, with a separate Excel audit report.",
+    )
+    html = html.replace("Download Sanitized Package", "Download Sanitized Output")
+    html = html.replace(">Package</a>", ">Output</a>")
     return render_template_string(
         html,
         max_mb=cfg.MAX_UPLOAD_MB,
@@ -257,6 +265,7 @@ def _status_payload(job_id: str, info: dict) -> dict:
                 "file_stats": info.get("file_stats", []),
                 "duration": info.get("duration", 0),
                 "total_replacements": info.get("total_replacements", 0),
+                "output_type": info.get("output_type"),
             }
         )
     elif payload["status"] == "Failed":
@@ -280,6 +289,8 @@ def status(job_id: str):
     if not row:
         return jsonify(error="Invalid Job ID"), 404
     public = cfg.public_job(row, include_token_links=True)
+    out_path = Path(row.get("output_path") or "")
+    output_type = "package" if out_path.name.startswith("Sanitized_Package_") else "file"
     return jsonify(
         {
             "job_id": job_id,
@@ -292,6 +303,7 @@ def status(job_id: str):
             "error": public.get("error"),
             "created_by": public.get("created_by", ""),
             "file_stats": [],
+            "output_type": output_type,
         }
     )
 
@@ -328,7 +340,7 @@ def download(job_id: str):
         out.parent,
         out.name,
         as_attachment=True,
-        download_name=f"Sanitized_Package_{job_id}.zip",
+        download_name=out.name,
     )
 
 
@@ -481,7 +493,7 @@ def run_cli(path: str, rules: list[str] | None = None) -> int:
     if info.get("status") == "Done":
         print(f"Duration: {info.get('duration', 0):.2f}s")
         print("Total Replacements:", info.get("total_replacements", 0))
-        print("Output package:", info.get("output_path", ""))
+        print("Sanitized output:", info.get("output_path", ""))
         print("Audit report:", info.get("report_path", ""))
         return 0
     print("Error:", info.get("error", "Unknown error"), file=sys.stderr)
