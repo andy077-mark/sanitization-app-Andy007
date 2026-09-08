@@ -246,7 +246,11 @@ def test_multifile_folder_package_report_and_history_as_analyst():
         for row in sheet.iter_rows(values_only=True)
         for value in row
     )
-    assert "TESTSECRET" not in report_text
+    # Output files remain sanitized, but the audit report intentionally shows
+    # the configured keyword/rule exactly as entered by the administrator.
+    assert "TESTSECRET" in report_text
+    assert "Keywords" in report_text
+    assert "Safe Example" not in report_text
     assert "Total Replacements" in report_text
 
     jobs = client.get("/jobs?limit=20").get_json()["jobs"]
