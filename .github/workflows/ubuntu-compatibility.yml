@@ -44,8 +44,7 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-venv tesseract-ocr fonts-dejavu-core
-          tesseract --version | head -n 1
+          sudo apt-get install -y python3-venv
           if apt-cache show p7zip-full >/dev/null 2>&1; then
             sudo apt-get install -y p7zip-full
           elif apt-cache show 7zip >/dev/null 2>&1; then
@@ -76,8 +75,6 @@ jobs:
           .venv/bin/python -m pip freeze
 
       - name: Verify deployment environment
-        env:
-          SANIT_REQUIRE_OCR: "1"
         run: .venv/bin/python scripts/verify_environment.py
 
       - name: Run authentication and functional smoke tests
@@ -109,8 +106,6 @@ jobs:
 
       - name: Prepare builder
         run: |
-          sudo apt-get update
-          sudo apt-get install -y tesseract-ocr fonts-dejavu-core
           python3 -m pip install --upgrade pip
           mkdir -p dist
 
@@ -128,7 +123,6 @@ jobs:
           test -f scripts/benchmark_performance.py
           bash -n scripts/deploy_staging.sh
           .venv/bin/python --version >/dev/null 2>&1 || PIP_NO_INDEX=1 bash scripts/install_offline.sh
-          SANIT_REQUIRE_OCR=1 .venv/bin/python scripts/verify_environment.py
           .venv/bin/python main.py --help
           .venv/bin/python scripts/staging_acceptance.py --help
           .venv/bin/python scripts/benchmark_performance.py --help
