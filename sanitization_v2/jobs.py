@@ -126,11 +126,7 @@ def _session_set(job_id: str, **fields) -> None:
 
 
 def _zip_compression_level() -> int:
-    """Return a speed-oriented ZIP level while allowing local tuning.
-
-    Level 1 is deliberately the default: SOC log bundles favor fast completion
-    over maximum compression. Set SANIT_ZIP_COMPRESSION_LEVEL=0..9 if required.
-    """
+    """Return a speed-oriented ZIP level while allowing local tuning."""
     try:
         value = int(os.environ.get("SANIT_ZIP_COMPRESSION_LEVEL", "1"))
     except ValueError:
@@ -139,12 +135,7 @@ def _zip_compression_level() -> int:
 
 
 def _package_outputs(job_id: str, sanitized_root: Path, report: Path) -> Path:
-    """Create the downloadable package directly from sanitized outputs.
-
-    The previous implementation copied the entire sanitized tree into another
-    temporary Bundle directory before ZIP creation. For large SOC logs that
-    doubled disk I/O. Writing the ZIP directly avoids that extra full-file copy.
-    """
+    """Create one ZIP package for folder and multi-file batch jobs."""
     bundle = cfg.OUTPUT / f"Sanitized_Package_{job_id}.zip"
     level = _zip_compression_level()
     with zipfile.ZipFile(
@@ -163,6 +154,39 @@ def _package_outputs(job_id: str, sanitized_root: Path, report: Path) -> Path:
     return bundle
 
 
+def _is_direct_single_file_job(upload_paths: list[Path], relative_paths: list[str]) -> bool:
+    """Return True only for a single file selected directly, not a folder upload."""
+    if len(upload_paths) != 1:
+        return False
+    raw = str(relative_paths[0] if relative_paths else "").replace("\\", "/").strip("/")
+    parts = [part for part in raw.split("/") if part not in ("", ".", "..")]
+    return len(parts) <= 1
+
+
+def _sanitized_download_name(path: Path) -> str:
+    """Add _SANITIZED while preserving normal and compound archive extensions."""
+    name = Path(path).name
+    ext = get_archive_ext(name) if is_archive_name(name) else Path(name).suffix
+    if ext and name.lower().endswith(ext.lower()):
+        stem = name[: -len(ext)]
+    else:
+        stem = name
+        ext = ""
+    return f"{stem}_SANITIZED{ext}"
+
+
+def _store_direct_output(job_id: str, sanitized_path: Path) -> Path:
+    """Move one sanitized output into a per-job output directory for direct download."""
+    destination_dir = cfg.OUTPUT / job_id
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    destination = destination_dir / _sanitized_download_name(sanitized_path)
+    try:
+        shutil.move(str(sanitized_path), str(destination))
+    except OSError:
+        shutil.copy2(sanitized_path, destination)
+    return destination
+
+
 def process_file(
     job_id: str,
     upload_paths: list[Path],
@@ -171,7 +195,7 @@ def process_file(
     ip: str | None,
     rules_override: list[str] | None = None,
 ) -> None:
-    """Process all uploaded files as one job and produce one ZIP package + Excel report."""
+    """Process uploaded files and return a direct file or a batch ZIP plus Excel report."""
     cfg.sem.acquire()
     started = datetime.now()
     perf_started = time.perf_counter()
@@ -188,6 +212,7 @@ def process_file(
         stats: list[dict] = []
         total_replacements = 0
         file_count = max(1, len(upload_paths))
+        last_output: Path | None = None
 
         for idx, up in enumerate(upload_paths):
             original = original_names[idx]
@@ -223,17 +248,14 @@ def process_file(
                     candidate = target_parent / f"{stem}_{counter}{ext}"
                     counter += 1
 
-                # Uploads and the job workspace live under the same application
-                # filesystem. Moving is normally a metadata operation and avoids
-                # a complete extra copy of large logs before sanitization.
                 try:
                     shutil.move(str(up), str(candidate))
                 except OSError:
-                    # Safe fallback for unusual cross-filesystem deployments.
                     shutil.copy2(up, candidate)
                 replacements += sanitize_file_if_supported(candidate, active_rules, audit, audit_name)
                 out = candidate
 
+            last_output = out
             elapsed = time.perf_counter() - file_started
             try:
                 output_rel = out.relative_to(sanitized_root).as_posix()
@@ -258,10 +280,19 @@ def process_file(
         )
         report_elapsed = time.perf_counter() - report_started
 
-        _session_set(job_id, progress=92, current_file="Packaging sanitized outputs")
-        package_started = time.perf_counter()
-        bundle = _package_outputs(job_id, sanitized_root, report)
-        package_elapsed = time.perf_counter() - package_started
+        output_started = time.perf_counter()
+        direct_single = _is_direct_single_file_job(upload_paths, relative_paths)
+        if direct_single:
+            if last_output is None:
+                raise RuntimeError("Sanitized output file was not created")
+            _session_set(job_id, progress=92, current_file="Preparing sanitized file")
+            output = _store_direct_output(job_id, last_output)
+            output_type = "file"
+        else:
+            _session_set(job_id, progress=92, current_file="Packaging sanitized batch")
+            output = _package_outputs(job_id, sanitized_root, report)
+            output_type = "package"
+        output_elapsed = time.perf_counter() - output_started
 
         duration = (datetime.now() - started).total_seconds()
         token = cfg.SESSIONS[job_id]["token"]
@@ -272,7 +303,8 @@ def process_file(
             "file_stats": stats,
             "total_replacements": total_replacements,
             "duration": duration,
-            "output_path": str(bundle),
+            "output_path": str(output),
+            "output_type": output_type,
             "report_path": str(report),
             "download": f"/download/{job_id}?token={token}",
             "report_download": f"/download/report/{job_id}?token={token}",
@@ -285,7 +317,7 @@ def process_file(
             completed_at=completed,
             total_replacements=total_replacements,
             duration=duration,
-            output_path=str(bundle),
+            output_path=str(output),
             report_path=str(report),
             error=None,
         )
@@ -301,11 +333,12 @@ def process_file(
                         "ip": ip,
                         "duration": round(duration, 3),
                         "replacements": total_replacements,
+                        "output_type": output_type,
                         "performance": {
                             "processing_seconds": round(processing_elapsed, 3),
                             "report_seconds": round(report_elapsed, 3),
-                            "packaging_seconds": round(package_elapsed, 3),
-                            "zip_compression_level": _zip_compression_level(),
+                            "output_seconds": round(output_elapsed, 3),
+                            "zip_compression_level": _zip_compression_level() if output_type == "package" else None,
                         },
                     }
                 )
