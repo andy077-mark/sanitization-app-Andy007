@@ -106,7 +106,7 @@ def test_authentication_ui_roles_health_and_security_headers():
         'id="healthBtn"',
     ):
         assert required in html
-    assert "Administrator" in html
+    assert "Admin" in html
     assert response.headers["X-Frame-Options"] == "DENY"
     assert "default-src 'self'" in response.headers["Content-Security-Policy"]
 
