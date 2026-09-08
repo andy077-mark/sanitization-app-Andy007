@@ -6,6 +6,7 @@ uploads/
 outputs/
 logs/
 temp/
+data/
 certs/
 tools/
 .DS_Store
