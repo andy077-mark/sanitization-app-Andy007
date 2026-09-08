@@ -31,6 +31,10 @@ cp -R "$ROOT/deploy" "$STAGE/"
 cp "$ROOT/scripts/install_offline.sh" "$STAGE/scripts/"
 cp "$ROOT/scripts/verify_environment.py" "$STAGE/scripts/"
 cp "$ROOT/scripts/start_production.sh" "$STAGE/scripts/"
+cp "$ROOT/scripts/deploy_staging.sh" "$STAGE/scripts/"
+cp "$ROOT/scripts/staging_acceptance.py" "$STAGE/scripts/"
+
+chmod +x "$STAGE/scripts/"*.sh "$STAGE/scripts/staging_acceptance.py"
 
 if [[ -n "${SANIT_7ZIP_BINARY:-}" ]]; then
   if [[ ! -f "$SANIT_7ZIP_BINARY" ]]; then
@@ -54,20 +58,31 @@ fi
 cat > "$STAGE/OFFLINE_INSTALL.txt" <<'EOF'
 SOC Data Sanitization Platform v2.1 - Offline Installation
 
-1. Transfer this entire folder to the air-gapped Ubuntu server.
-2. Ensure Python 3.10+ and python3-venv are already installed from approved OS media/repos.
-3. Run:
+Recommended staging/systemd installation:
 
-   bash scripts/install_offline.sh
+  sudo bash scripts/deploy_staging.sh --admin <username>
 
-4. Create the first administrator interactively:
+The staging deployer automatically uses the included wheels/ directory with
+--no-index, creates the dedicated sanitizer service account, configures the
+systemd/Gunicorn service, and validates /healthz before reporting success.
 
-   .venv/bin/python main.py --create-user <username> --role admin
+After deployment, create an Analyst if required:
 
-5. For production, follow DEPLOYMENT.md to install the systemd/Gunicorn service.
+  sudo -u sanitizer /opt/sanitization-app/.venv/bin/python /opt/sanitization-app/main.py --create-user analyst01 --role analyst
 
-The installer uses only the local wheels/ directory and does not contact PyPI.
-ZIP/TAR/GZ/BZ2/XZ can be processed without 7-Zip. .7z/.rar require a bundled or locally installed 7-Zip binary.
+Then run acceptance as both roles:
+
+  /opt/sanitization-app/.venv/bin/python /opt/sanitization-app/scripts/staging_acceptance.py --url https://127.0.0.1:8443 --username <admin> --role admin
+  /opt/sanitization-app/.venv/bin/python /opt/sanitization-app/scripts/staging_acceptance.py --url https://127.0.0.1:8443 --username <analyst> --role analyst
+
+Alternative manual installation:
+
+  bash scripts/install_offline.sh
+  .venv/bin/python main.py --create-user <username> --role admin
+
+The offline installer uses only the local wheels/ directory and does not contact
+PyPI. ZIP/TAR/GZ/BZ2/XZ can be processed without 7-Zip. .7z/.rar require a
+bundled or locally installed 7-Zip binary.
 EOF
 
 mkdir -p "$DIST"
