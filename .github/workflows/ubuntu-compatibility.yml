@@ -19,10 +19,16 @@ jobs:
         include:
           - name: Ubuntu 22.04 / system Python 3.10
             os: ubuntu-22.04
+            os_version: "22.04"
             python: "3.10"
           - name: Ubuntu 24.04 / system Python 3.12
             os: ubuntu-24.04
+            os_version: "24.04"
             python: "3.12"
+          - name: Ubuntu 26.04 / system Python 3.14
+            os: ubuntu-26.04
+            os_version: "26.04"
+            python: "3.14"
 
     steps:
       - name: Checkout
@@ -35,20 +41,27 @@ jobs:
           python3 --version
           python3 - <<PY
           import sys
+          from pathlib import Path
           expected = tuple(map(int, "${{ matrix.python }}".split(".")))
           actual = sys.version_info[:2]
           assert actual == expected, f"Expected system Python {expected}, found {actual}"
+          values = {}
+          for raw in Path('/etc/os-release').read_text().splitlines():
+              if '=' in raw:
+                  k, v = raw.split('=', 1)
+                  values[k] = v.strip().strip('"')
+          assert values.get('VERSION_ID') == "${{ matrix.os_version }}", values
           PY
 
-      - name: Install OS prerequisites
+      - name: Install OS prerequisites for CI builder
         shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install -y python3-venv
-          if apt-cache show p7zip-full >/dev/null 2>&1; then
-            sudo apt-get install -y p7zip-full
-          elif apt-cache show 7zip >/dev/null 2>&1; then
+          if apt-cache show 7zip >/dev/null 2>&1; then
             sudo apt-get install -y 7zip
+          elif apt-cache show p7zip-full >/dev/null 2>&1; then
+            sudo apt-get install -y p7zip-full
           fi
 
       - name: Validate deployment and benchmark script syntax
@@ -58,6 +71,7 @@ jobs:
           bash -n scripts/build_offline_bundle.sh
           bash -n scripts/install_offline.sh
           bash -n scripts/start_production.sh
+          python3 -m py_compile scripts/check_bundle_compatibility.py
           python3 -m py_compile scripts/staging_acceptance.py
           python3 -m py_compile scripts/benchmark_performance.py
 
@@ -68,13 +82,13 @@ jobs:
           python3 -m venv .venv
           .venv/bin/python -m pip install --upgrade pip
 
-      - name: Install pinned dependencies
+      - name: Install complete locked dependency chain
         shell: bash
         run: |
-          .venv/bin/python -m pip install -r requirements.txt -r requirements-ci.txt
+          .venv/bin/python -m pip install -r requirements-lock.txt -r requirements-ci.txt
           .venv/bin/python -m pip freeze
 
-      - name: Verify deployment environment
+      - name: Verify deployment environment and dependency lock
         run: .venv/bin/python scripts/verify_environment.py
 
       - name: Run authentication and functional smoke tests
@@ -96,9 +110,22 @@ jobs:
         run: .venv/bin/python main.py --help
 
   offline-bundle:
-    name: Prove offline installation bundle
-    runs-on: ubuntu-24.04
+    name: Offline bundle / Ubuntu ${{ matrix.os_version }} / Python ${{ matrix.python }}
     needs: compatibility
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            os_version: "22.04"
+            python: "3.10"
+          - os: ubuntu-24.04
+            os_version: "24.04"
+            python: "3.12"
+          - os: ubuntu-26.04
+            os_version: "26.04"
+            python: "3.14"
 
     steps:
       - name: Checkout
@@ -106,23 +133,31 @@ jobs:
 
       - name: Prepare builder
         run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-venv
           python3 -m pip install --upgrade pip
           mkdir -p dist
 
-      - name: Build wheelhouse and deployment archive
+      - name: Build OS-specific wheelhouse and deployment archive
         run: bash scripts/build_offline_bundle.sh
 
-      - name: Install bundle with network package access disabled
+      - name: Install bundle with all Python network access disabled
         shell: bash
         run: |
           mkdir -p /tmp/sanitization-offline-test
-          tar -xzf dist/SanitizationApp-v2.1-offline-*.tar.gz -C /tmp/sanitization-offline-test
-          cd /tmp/sanitization-offline-test/SanitizationApp-v2.1-offline-*
+          tar -xzf dist/SanitizationApp-v2.1-Ubuntu${{ matrix.os_version }}-Python${{ matrix.python }}-*-offline.tar.gz -C /tmp/sanitization-offline-test
+          cd /tmp/sanitization-offline-test/SanitizationApp-v2.1-Ubuntu${{ matrix.os_version }}-Python${{ matrix.python }}-*-offline
+          test -f RUNTIME_MANIFEST.json
+          test -f requirements-lock.txt
+          test -f WHEELS_SHA256SUMS.txt
           test -f scripts/deploy_staging.sh
+          test -f scripts/check_bundle_compatibility.py
           test -f scripts/staging_acceptance.py
           test -f scripts/benchmark_performance.py
           bash -n scripts/deploy_staging.sh
-          .venv/bin/python --version >/dev/null 2>&1 || PIP_NO_INDEX=1 bash scripts/install_offline.sh
+          python3 scripts/check_bundle_compatibility.py RUNTIME_MANIFEST.json
+          PIP_NO_INDEX=1 bash scripts/install_offline.sh
+          .venv/bin/python scripts/verify_environment.py
           .venv/bin/python main.py --help
           .venv/bin/python scripts/staging_acceptance.py --help
           .venv/bin/python scripts/benchmark_performance.py --help
@@ -131,8 +166,8 @@ jobs:
       - name: Upload tested offline package
         uses: actions/upload-artifact@v4
         with:
-          name: SanitizationApp-v2.1-Ubuntu24-offline
+          name: SanitizationApp-v2.1-Ubuntu${{ matrix.os_version }}-Python${{ matrix.python }}-offline
           path: |
-            dist/SanitizationApp-v2.1-offline-*.tar.gz
-            dist/SanitizationApp-v2.1-offline-*.tar.gz.sha256
+            dist/SanitizationApp-v2.1-Ubuntu${{ matrix.os_version }}-Python${{ matrix.python }}-*-offline.tar.gz
+            dist/SanitizationApp-v2.1-Ubuntu${{ matrix.os_version }}-Python${{ matrix.python }}-*-offline.tar.gz.sha256
           if-no-files-found: error
