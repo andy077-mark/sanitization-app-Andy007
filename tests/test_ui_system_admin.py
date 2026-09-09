@@ -85,6 +85,32 @@ def test_visual_flow_system_overview_and_admin_controls_are_wired():
     ):
         assert expected in html
 
+    # Static theme assets must be served locally and the JavaScript must include
+    # handlers for every interactive dashboard control. This prevents a visual
+    # redesign from leaving dead buttons behind.
+    assert client.get("/static/theme.css").status_code == 200
+    assert client.get("/static/login.css").status_code == 200
+    js_response = client.get("/static/dashboard.js")
+    assert js_response.status_code == 200
+    javascript = js_response.get_data(as_text=True)
+    for handler_marker in (
+        "$('browse').onclick",
+        "$('browseFolder').onclick",
+        "$('clear').onclick",
+        "$('start').onclick",
+        "$('refreshJobs').onclick",
+        "$('exportJobs').onclick",
+        "$('healthBtn').onclick",
+        "$('addRule').onclick",
+        "$('saveRules').onclick",
+        "$('clearRules').onclick",
+        "$('replaceRules').onclick",
+        "$('refreshUsers').onclick",
+        "$('createUser').onclick",
+        "$('refreshLogs').onclick",
+    ):
+        assert handler_marker in javascript
+
     health = client.get("/health")
     assert health.status_code == 200
     system_response = client.get("/system-info")
