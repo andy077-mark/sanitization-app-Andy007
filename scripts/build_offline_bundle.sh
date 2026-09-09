@@ -50,12 +50,13 @@ cp -R "$ROOT/sanitization_v2" "$STAGE/"
 cp -R "$ROOT/deploy" "$STAGE/"
 cp "$ROOT/scripts/install_offline.sh" "$STAGE/scripts/"
 cp "$ROOT/scripts/verify_environment.py" "$STAGE/scripts/"
+cp "$ROOT/scripts/check_bundle_compatibility.py" "$STAGE/scripts/"
 cp "$ROOT/scripts/start_production.sh" "$STAGE/scripts/"
 cp "$ROOT/scripts/deploy_staging.sh" "$STAGE/scripts/"
 cp "$ROOT/scripts/staging_acceptance.py" "$STAGE/scripts/"
 cp "$ROOT/scripts/benchmark_performance.py" "$STAGE/scripts/"
 
-chmod +x "$STAGE/scripts/"*.sh "$STAGE/scripts/staging_acceptance.py" "$STAGE/scripts/benchmark_performance.py"
+chmod +x "$STAGE/scripts/"*.sh "$STAGE/scripts/"*.py
 
 if [[ -n "${SANIT_7ZIP_BINARY:-}" ]]; then
   if [[ ! -f "$SANIT_7ZIP_BINARY" ]]; then
@@ -77,7 +78,6 @@ fi
 )
 
 python3 - "$STAGE" "$OS_ID" "$OS_VERSION" "$PYTHON_MM" "$ARCH" <<'PY'
-import importlib.metadata as md
 import json
 import platform
 import subprocess
