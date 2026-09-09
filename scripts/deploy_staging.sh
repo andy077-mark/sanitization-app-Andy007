@@ -93,7 +93,7 @@ if systemctl list-unit-files "$SERVICE_NAME.service" >/dev/null 2>&1; then
 fi
 
 # Preserve runtime state on upgrades. Copy application code/configuration only.
-for entry in main.py wsgi.py bad_words.txt requirements.txt requirements-lock.txt RUNTIME_MANIFEST.json README.md DEPLOYMENT.md PERFORMANCE_BENCHMARK.md gunicorn.conf.py templates sanitization_v2 scripts deploy tools; do
+for entry in main.py wsgi.py bad_words.txt requirements.txt requirements-lock.txt RUNTIME_MANIFEST.json README.md DEPLOYMENT.md PERFORMANCE_BENCHMARK.md OS_COMPATIBILITY_REVIEW.md gunicorn.conf.py templates sanitization_v2 scripts deploy tools; do
   [[ -e "$SOURCE_DIR/$entry" ]] || continue
   rm -rf "$APP_DIR/$entry"
   cp -a "$SOURCE_DIR/$entry" "$APP_DIR/$entry"
@@ -198,7 +198,24 @@ if ! systemctl is-active --quiet "$SERVICE_NAME.service"; then
   exit 1
 fi
 
-if ! curl -kfsS --max-time 10 https://127.0.0.1:8443/healthz >/dev/null; then
+# Use the bundled Python standard library for the local HTTPS health probe so
+# deployment does not depend on curl/wget being installed on the Ubuntu host.
+if ! "$APP_DIR/.venv/bin/python" - <<'PY'
+import json
+import ssl
+import urllib.request
+
+ctx = ssl.create_default_context()
+ctx.check_hostname = False
+ctx.verify_mode = ssl.CERT_NONE
+with urllib.request.urlopen("https://127.0.0.1:8443/healthz", context=ctx, timeout=10) as response:
+    if response.status != 200:
+        raise SystemExit(f"health status {response.status}")
+    payload = json.loads(response.read().decode("utf-8"))
+    if payload.get("status") != "ok":
+        raise SystemExit(f"unexpected health response: {payload}")
+PY
+then
   echo "ERROR: service is running but HTTPS /healthz did not respond successfully." >&2
   journalctl -u "$SERVICE_NAME.service" -n 80 --no-pager >&2 || true
   exit 1
