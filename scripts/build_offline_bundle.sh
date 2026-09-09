@@ -4,16 +4,34 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARCH="$(uname -m)"
 DIST="$ROOT/dist"
-STAGE="$DIST/SanitizationApp-v2.1-offline-${ARCH}"
-ARCHIVE="$DIST/SanitizationApp-v2.1-offline-${ARCH}.tar.gz"
+
+OS_ID="linux"
+OS_VERSION="unknown"
+if [[ -f /etc/os-release ]]; then
+  # shellcheck disable=SC1091
+  source /etc/os-release
+  OS_ID="${ID:-linux}"
+  OS_VERSION="${VERSION_ID:-unknown}"
+fi
+PYTHON_MM="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+OS_LABEL="$(printf '%s' "$OS_ID" | sed 's/^./\U&/')${OS_VERSION}"
+BUNDLE_ID="${OS_LABEL}-Python${PYTHON_MM}-${ARCH}"
+STAGE="$DIST/SanitizationApp-v2.1-${BUNDLE_ID}-offline"
+ARCHIVE="$DIST/SanitizationApp-v2.1-${BUNDLE_ID}-offline.tar.gz"
+LOCK_FILE="$ROOT/requirements-lock.txt"
+
+if [[ ! -f "$LOCK_FILE" ]]; then
+  echo "ERROR: complete dependency lock not found: $LOCK_FILE" >&2
+  exit 1
+fi
 
 rm -rf "$STAGE" "$ARCHIVE" "$ARCHIVE.sha256"
 mkdir -p "$STAGE/wheels" "$STAGE/scripts"
 
-echo "Building offline Python wheelhouse for $(python3 --version) / ${ARCH}..."
+echo "Building offline Python wheelhouse for ${OS_ID} ${OS_VERSION} / Python ${PYTHON_MM} / ${ARCH}..."
 python3 -m pip download \
   --only-binary=:all: \
-  -r "$ROOT/requirements.txt" \
+  -r "$LOCK_FILE" \
   -d "$STAGE/wheels"
 
 cp "$ROOT/main.py" "$STAGE/"
@@ -21,6 +39,7 @@ cp "$ROOT/wsgi.py" "$STAGE/"
 cp "$ROOT/gunicorn.conf.py" "$STAGE/"
 cp "$ROOT/bad_words.txt" "$STAGE/"
 cp "$ROOT/requirements.txt" "$STAGE/"
+cp "$ROOT/requirements-lock.txt" "$STAGE/"
 cp "$ROOT/README.md" "$STAGE/"
 [[ -f "$ROOT/DEPLOYMENT.md" ]] && cp "$ROOT/DEPLOYMENT.md" "$STAGE/"
 [[ -f "$ROOT/PERFORMANCE_BENCHMARK.md" ]] && cp "$ROOT/PERFORMANCE_BENCHMARK.md" "$STAGE/"
@@ -57,16 +76,67 @@ fi
   sha256sum * > ../WHEELS_SHA256SUMS.txt
 )
 
-cat > "$STAGE/OFFLINE_INSTALL.txt" <<'EOF'
+python3 - "$STAGE" "$OS_ID" "$OS_VERSION" "$PYTHON_MM" "$ARCH" <<'PY'
+import importlib.metadata as md
+import json
+import platform
+import subprocess
+import sys
+from pathlib import Path
+
+stage = Path(sys.argv[1])
+os_id, os_version, python_mm, arch = sys.argv[2:]
+try:
+    commit = subprocess.check_output(
+        ["git", "-C", str(stage.parent.parent), "rev-parse", "HEAD"],
+        text=True,
+        stderr=subprocess.DEVNULL,
+    ).strip()
+except Exception:
+    commit = "unknown"
+
+lock = stage / "requirements-lock.txt"
+locked = []
+for raw in lock.read_text("utf-8").splitlines():
+    line = raw.strip()
+    if not line or line.startswith("#") or "==" not in line:
+        continue
+    name, version = line.split("==", 1)
+    locked.append({"name": name, "version": version})
+
+manifest = {
+    "application": "SOC Data Sanitization Platform",
+    "version": "2.1",
+    "commit": commit,
+    "os_id": os_id,
+    "os_version": os_version,
+    "python_major_minor": python_mm,
+    "python_build": platform.python_version(),
+    "architecture": arch,
+    "dependency_lock": "requirements-lock.txt",
+    "dependencies": locked,
+    "network_required_on_target": False,
+}
+(stage / "RUNTIME_MANIFEST.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+PY
+
+cat > "$STAGE/OFFLINE_INSTALL.txt" <<EOF
 SOC Data Sanitization Platform v2.1 - Offline Installation
+
+Bundle target:
+  OS:           ${OS_ID} ${OS_VERSION}
+  Python:       ${PYTHON_MM}
+  Architecture: ${ARCH}
 
 Recommended staging/systemd installation:
 
   sudo bash scripts/deploy_staging.sh --admin <username>
 
 The staging deployer automatically uses the included wheels/ directory with
---no-index, creates the dedicated sanitizer service account, configures the
-systemd/Gunicorn service, and validates /healthz before reporting success.
+--no-index. It does not contact PyPI or any external Python package repository.
+The target OS must provide its normal system Python ${PYTHON_MM} and python3-venv
+package. If those OS packages are managed offline, obtain them from the approved
+internal Ubuntu repository/media before deployment.
 
 After deployment, create an Analyst if required:
 
@@ -83,12 +153,11 @@ Performance baseline after staging acceptance:
 
 Alternative manual installation:
 
-  bash scripts/install_offline.sh
+  PIP_NO_INDEX=1 bash scripts/install_offline.sh
   .venv/bin/python main.py --create-user <username> --role admin
 
-The offline installer uses only the local wheels/ directory and does not contact
-PyPI. ZIP/TAR/GZ/BZ2/XZ can be processed without 7-Zip. .7z/.rar require a
-bundled or locally installed 7-Zip binary.
+The offline installer uses only the local wheels/ directory. ZIP/TAR/GZ/BZ2/XZ
+work without 7-Zip. .7z/.rar require a bundled or locally installed 7-Zip binary.
 EOF
 
 mkdir -p "$DIST"
