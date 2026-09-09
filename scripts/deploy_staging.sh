@@ -64,8 +64,18 @@ print("Python", sys.version.split()[0], "OK")
 PY
 
 if ! python3 -m venv --help >/dev/null 2>&1; then
-  echo "ERROR: python3-venv is required. Install it from your approved Ubuntu repository/media." >&2
+  cat >&2 <<'EOF'
+ERROR: python3-venv is required.
+Install the matching Ubuntu python3-venv package from approved internal/offline
+OS media. This deployment script will not contact Ubuntu repositories itself.
+EOF
   exit 1
+fi
+
+# If this is an OS-specific offline release, reject the wrong bundle before any
+# application state is changed. Development/source deployments have no manifest.
+if [[ -f "$SOURCE_DIR/scripts/check_bundle_compatibility.py" ]]; then
+  python3 "$SOURCE_DIR/scripts/check_bundle_compatibility.py" "$SOURCE_DIR/RUNTIME_MANIFEST.json"
 fi
 
 if ! getent group "$SERVICE_GROUP" >/dev/null 2>&1; then
@@ -83,7 +93,7 @@ if systemctl list-unit-files "$SERVICE_NAME.service" >/dev/null 2>&1; then
 fi
 
 # Preserve runtime state on upgrades. Copy application code/configuration only.
-for entry in main.py wsgi.py bad_words.txt requirements.txt README.md DEPLOYMENT.md gunicorn.conf.py templates sanitization_v2 scripts deploy tools; do
+for entry in main.py wsgi.py bad_words.txt requirements.txt requirements-lock.txt RUNTIME_MANIFEST.json README.md DEPLOYMENT.md PERFORMANCE_BENCHMARK.md gunicorn.conf.py templates sanitization_v2 scripts deploy tools; do
   [[ -e "$SOURCE_DIR/$entry" ]] || continue
   rm -rf "$APP_DIR/$entry"
   cp -a "$SOURCE_DIR/$entry" "$APP_DIR/$entry"
@@ -94,21 +104,36 @@ if [[ -d "$SOURCE_DIR/wheels" ]]; then
   rm -rf "$APP_DIR/wheels"
   cp -a "$SOURCE_DIR/wheels" "$APP_DIR/wheels"
 fi
+if [[ -f "$SOURCE_DIR/WHEELS_SHA256SUMS.txt" ]]; then
+  cp "$SOURCE_DIR/WHEELS_SHA256SUMS.txt" "$APP_DIR/WHEELS_SHA256SUMS.txt"
+fi
 
 mkdir -p "$APP_DIR"/{uploads,outputs,logs,temp,data,certs}
 chown -R "$SERVICE_USER:$SERVICE_GROUP" "$APP_DIR"
 chmod 0750 "$APP_DIR"
 chmod 0700 "$APP_DIR"/{uploads,outputs,logs,temp,data,certs}
 
+# Validate the installed copy again so an OS upgrade or mismatched bundle is
+# reported explicitly before the virtual environment is rebuilt.
+python3 "$APP_DIR/scripts/check_bundle_compatibility.py" "$APP_DIR/RUNTIME_MANIFEST.json"
+
+REQ_FILE="$APP_DIR/requirements-lock.txt"
+if [[ ! -f "$REQ_FILE" ]]; then
+  REQ_FILE="$APP_DIR/requirements.txt"
+fi
+
 rm -rf "$APP_DIR/.venv"
 python3 -m venv "$APP_DIR/.venv"
 
 if [[ -d "$APP_DIR/wheels" ]]; then
   echo "Installing Python packages from local offline wheelhouse..."
-  "$APP_DIR/.venv/bin/python" -m pip install --no-index --find-links="$APP_DIR/wheels" -r "$APP_DIR/requirements.txt"
+  if [[ -f "$APP_DIR/WHEELS_SHA256SUMS.txt" ]]; then
+    (cd "$APP_DIR/wheels" && sha256sum -c ../WHEELS_SHA256SUMS.txt)
+  fi
+  PIP_NO_INDEX=1 "$APP_DIR/.venv/bin/python" -m pip install --no-index --find-links="$APP_DIR/wheels" -r "$REQ_FILE"
 elif [[ "$ALLOW_ONLINE" -eq 1 ]]; then
   echo "Installing Python packages from configured package indexes (--online explicitly enabled)..."
-  "$APP_DIR/.venv/bin/python" -m pip install -r "$APP_DIR/requirements.txt"
+  "$APP_DIR/.venv/bin/python" -m pip install -r "$REQ_FILE"
 else
   cat >&2 <<EOF
 ERROR: no local wheels/ directory was found.
