@@ -20,8 +20,6 @@ def load_expected_dependencies() -> dict[str, str]:
     """Load the complete direct + transitive runtime dependency lock."""
     lock = ROOT / "requirements-lock.txt"
     if not lock.is_file():
-        # Compatibility fallback for development checkouts created before the
-        # full lock file was introduced. Release bundles must always include it.
         return {
             "Flask": "3.1.3",
             "cryptography": "50.0.1",
@@ -137,16 +135,24 @@ def main() -> int:
             probe.unlink()
             print(f"Writable:  {name:<8} {path}")
 
-        for relative in (
+        production_files = (
             "templates/index.html",
             "templates/login.html",
+            "sanitization_v2/templates/login.html",
+            "sanitization_v2/ui_extension.py",
+            "sanitization_v2/static/theme.css",
+            "sanitization_v2/static/login.css",
+            "sanitization_v2/static/dashboard.js",
             "gunicorn.conf.py",
             "wsgi.py",
             "requirements-lock.txt",
-        ):
+        )
+        for relative in production_files:
             target = cfg.BASE / relative
             if not target.is_file():
                 failures.append(f"Missing production file: {target}")
+        if not failures:
+            print(f"UI assets:  {len(production_files)} production file(s) present")
 
         rules = cfg.BASE / "bad_words.txt"
         if not rules.is_file():
