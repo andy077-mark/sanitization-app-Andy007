@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.metadata as metadata
+import json
 import os
 import platform
 import shutil
@@ -14,35 +15,82 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-EXPECTED = {
-    "Flask": "3.1.3",
-    "cryptography": "50.0.1",
-    "openpyxl": "3.1.5",
-    "xlrd": "2.0.2",
-    "xlwt": "1.3.0",
-    "PyMuPDF": "1.26.4",
-    "python-docx": "1.2.0",
-    "gunicorn": "23.0.0",
-}
+
+def load_expected_dependencies() -> dict[str, str]:
+    """Load the complete direct + transitive runtime dependency lock."""
+    lock = ROOT / "requirements-lock.txt"
+    if not lock.is_file():
+        # Compatibility fallback for development checkouts created before the
+        # full lock file was introduced. Release bundles must always include it.
+        return {
+            "Flask": "3.1.3",
+            "cryptography": "50.0.1",
+            "openpyxl": "3.1.5",
+            "xlrd": "2.0.2",
+            "xlwt": "1.3.0",
+            "PyMuPDF": "1.26.4",
+            "python-docx": "1.2.0",
+            "gunicorn": "23.0.0",
+        }
+    expected: dict[str, str] = {}
+    for raw in lock.read_text("utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "==" not in line:
+            raise RuntimeError(f"Unpinned dependency in {lock.name}: {line}")
+        name, version = line.split("==", 1)
+        expected[name.strip()] = version.strip()
+    return expected
 
 
-def os_release() -> str:
+def os_release_values() -> dict[str, str]:
     path = Path("/etc/os-release")
     if not path.exists():
-        return platform.platform()
-    values = {}
+        return {}
+    values: dict[str, str] = {}
     for line in path.read_text("utf-8", errors="ignore").splitlines():
         if "=" in line:
             key, value = line.split("=", 1)
             values[key] = value.strip().strip('"')
+    return values
+
+
+def os_release() -> str:
+    values = os_release_values()
+    if not values:
+        return platform.platform()
     return f"{values.get('NAME', platform.system())} {values.get('VERSION_ID', '')}".strip()
+
+
+def check_runtime_manifest(failures: list[str]) -> None:
+    path = ROOT / "RUNTIME_MANIFEST.json"
+    if not path.is_file():
+        return
+    try:
+        manifest = json.loads(path.read_text("utf-8"))
+    except Exception as exc:
+        failures.append(f"Invalid runtime manifest: {exc}")
+        return
+
+    values = os_release_values()
+    actual = {
+        "os_id": values.get("ID", "linux"),
+        "os_version": values.get("VERSION_ID", "unknown"),
+        "python_major_minor": f"{sys.version_info.major}.{sys.version_info.minor}",
+        "architecture": platform.machine(),
+    }
+    for key in ("os_id", "os_version", "python_major_minor", "architecture"):
+        expected = manifest.get(key)
+        if expected and str(expected) != str(actual[key]):
+            failures.append(f"Runtime manifest mismatch for {key}: expected {expected}, found {actual[key]}")
 
 
 def main() -> int:
     failures: list[str] = []
     warnings: list[str] = []
     print("SOC Data Sanitization Platform v2.1 - Environment Check")
-    print("=" * 66)
+    print("=" * 72)
     print(f"OS:       {os_release()}")
     print(f"Platform: {platform.machine()} / {platform.system()}")
     print(f"Python:   {platform.python_version()}")
@@ -50,11 +98,20 @@ def main() -> int:
     if sys.version_info < (3, 10):
         failures.append("Python 3.10 or newer is required")
 
-    for package, expected in EXPECTED.items():
+    check_runtime_manifest(failures)
+
+    try:
+        expected_dependencies = load_expected_dependencies()
+    except Exception as exc:
+        failures.append(f"Dependency lock could not be loaded: {exc}")
+        expected_dependencies = {}
+
+    print(f"Dependency lock: {len(expected_dependencies)} runtime package(s)")
+    for package, expected in expected_dependencies.items():
         try:
             actual = metadata.version(package)
             marker = "OK" if actual == expected else "MISMATCH"
-            print(f"{package:<14} {actual:<12} {marker}")
+            print(f"{package:<18} {actual:<12} {marker}")
             if actual != expected:
                 failures.append(f"{package} must be {expected}; found {actual}")
         except metadata.PackageNotFoundError:
@@ -63,6 +120,14 @@ def main() -> int:
     try:
         from sanitization_v2 import auth
         from sanitization_v2 import config as cfg
+        from sanitization_v2 import rules as rules_module
+
+        active_patterns = rules_module.load_bad_patterns()
+        valid, rule_error = rules_module.validate_patterns(active_patterns)
+        if not valid:
+            failures.append(f"Rules Library validation failed: {rule_error}")
+        else:
+            print(f"Rules:     {len(active_patterns)} active pattern(s) validated")
 
         for name in ("UPLOAD", "OUTPUT", "LOGS", "TEMP", "DATA"):
             path = getattr(cfg, name)
@@ -72,7 +137,13 @@ def main() -> int:
             probe.unlink()
             print(f"Writable:  {name:<8} {path}")
 
-        for relative in ("templates/index.html", "templates/login.html", "gunicorn.conf.py", "wsgi.py"):
+        for relative in (
+            "templates/index.html",
+            "templates/login.html",
+            "gunicorn.conf.py",
+            "wsgi.py",
+            "requirements-lock.txt",
+        ):
             target = cfg.BASE / relative
             if not target.is_file():
                 failures.append(f"Missing production file: {target}")
@@ -122,7 +193,7 @@ def main() -> int:
     except Exception as exc:
         failures.append(f"Application environment check failed: {exc}")
 
-    print("-" * 66)
+    print("-" * 72)
     for warning in warnings:
         print(f"WARNING: {warning}")
     if failures:
