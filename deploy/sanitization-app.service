@@ -12,6 +12,10 @@ EnvironmentFile=-/etc/sanitization-app/sanitization.env
 Environment=SANIT_REQUIRE_ADMIN=1
 UMask=0077
 
+# Standard-library preflight runs before importing application dependencies. It
+# catches a stale Ubuntu/Python release bundle after an in-place OS upgrade and
+# reports a clear remediation instead of failing later with broken venv imports.
+ExecStartPre=/usr/bin/python3 /opt/sanitization-app/scripts/check_bundle_compatibility.py /opt/sanitization-app/RUNTIME_MANIFEST.json
 ExecStartPre=/opt/sanitization-app/.venv/bin/python /opt/sanitization-app/scripts/verify_environment.py
 ExecStart=/opt/sanitization-app/.venv/bin/gunicorn --config /opt/sanitization-app/gunicorn.conf.py wsgi:application
 
