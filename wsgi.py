@@ -9,6 +9,9 @@ if str(project_home) not in sys.path:
     sys.path.insert(0, str(project_home))
 
 from sanitization_v2.app import app as application  # noqa: E402
+from sanitization_v2.ui_extension import register_ui_extension  # noqa: E402
+
+register_ui_extension(application)
 
 # Optional alias used by some WSGI hosts.
 app = application
