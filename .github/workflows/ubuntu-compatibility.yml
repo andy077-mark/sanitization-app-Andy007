@@ -149,7 +149,10 @@ jobs:
           cd /tmp/sanitization-offline-test/SanitizationApp-v2.1-Ubuntu${{ matrix.os_version }}-Python${{ matrix.python }}-*-offline
           test -f RUNTIME_MANIFEST.json
           test -f requirements-lock.txt
-          test -f WHEELS_SHA256SUMS.txt
+          test -f dependency/requirements.txt
+          test -f dependency/requirements-lock.txt
+          test -f dependency/WHEELS_SHA256SUMS.txt
+          test -n "$(find dependency/wheels -maxdepth 1 -type f -name '*.whl' -print -quit)"
           test -f scripts/deploy_staging.sh
           test -f scripts/check_bundle_compatibility.py
           test -f scripts/staging_acceptance.py
