@@ -26,13 +26,13 @@ if [[ ! -f "$LOCK_FILE" ]]; then
 fi
 
 rm -rf "$STAGE" "$ARCHIVE" "$ARCHIVE.sha256"
-mkdir -p "$STAGE/wheels" "$STAGE/scripts"
+mkdir -p "$STAGE/dependency/wheels" "$STAGE/scripts"
 
-echo "Building offline Python wheelhouse for ${OS_ID} ${OS_VERSION} / Python ${PYTHON_MM} / ${ARCH}..."
+echo "Building offline Python dependency folder for ${OS_ID} ${OS_VERSION} / Python ${PYTHON_MM} / ${ARCH}..."
 python3 -m pip download \
   --only-binary=:all: \
   -r "$LOCK_FILE" \
-  -d "$STAGE/wheels"
+  -d "$STAGE/dependency/wheels"
 
 cp "$ROOT/main.py" "$STAGE/"
 cp "$ROOT/wsgi.py" "$STAGE/"
@@ -44,6 +44,7 @@ cp "$ROOT/README.md" "$STAGE/"
 [[ -f "$ROOT/DEPLOYMENT.md" ]] && cp "$ROOT/DEPLOYMENT.md" "$STAGE/"
 [[ -f "$ROOT/PERFORMANCE_BENCHMARK.md" ]] && cp "$ROOT/PERFORMANCE_BENCHMARK.md" "$STAGE/"
 [[ -f "$ROOT/OS_COMPATIBILITY_REVIEW.md" ]] && cp "$ROOT/OS_COMPATIBILITY_REVIEW.md" "$STAGE/"
+[[ -f "$ROOT/SOP.md" ]] && cp "$ROOT/SOP.md" "$STAGE/"
 [[ -f "$ROOT/start.sh" ]] && cp "$ROOT/start.sh" "$STAGE/"
 [[ -f "$ROOT/start.bat" ]] && cp "$ROOT/start.bat" "$STAGE/"
 cp -R "$ROOT/templates" "$STAGE/"
@@ -56,6 +57,11 @@ cp "$ROOT/scripts/start_production.sh" "$STAGE/scripts/"
 cp "$ROOT/scripts/deploy_staging.sh" "$STAGE/scripts/"
 cp "$ROOT/scripts/staging_acceptance.py" "$STAGE/scripts/"
 cp "$ROOT/scripts/benchmark_performance.py" "$STAGE/scripts/"
+
+# Keep requirement manifests with the actual local packages as requested.
+cp "$ROOT/requirements.txt" "$STAGE/dependency/requirements.txt"
+cp "$ROOT/requirements-lock.txt" "$STAGE/dependency/requirements-lock.txt"
+[[ -f "$ROOT/dependency/README.md" ]] && cp "$ROOT/dependency/README.md" "$STAGE/dependency/README.md"
 
 chmod +x "$STAGE/scripts/"*.sh "$STAGE/scripts/"*.py
 
@@ -74,7 +80,7 @@ else
 fi
 
 (
-  cd "$STAGE/wheels"
+  cd "$STAGE/dependency/wheels"
   sha256sum * > ../WHEELS_SHA256SUMS.txt
 )
 
@@ -115,6 +121,7 @@ manifest = {
     "python_build": platform.python_version(),
     "architecture": arch,
     "dependency_lock": "requirements-lock.txt",
+    "dependency_directory": "dependency/wheels",
     "dependencies": locked,
     "network_required_on_target": False,
 }
@@ -133,8 +140,11 @@ Recommended staging/systemd installation:
 
   sudo bash scripts/deploy_staging.sh --admin <username>
 
-The staging deployer automatically uses the included wheels/ directory with
---no-index. It does not contact PyPI or any external Python package repository.
+All required Python packages are included under dependency/wheels/ together with
+requirements.txt, requirements-lock.txt and WHEELS_SHA256SUMS.txt. The staging
+deployer automatically installs from dependency/wheels/ with --no-index and does
+not contact PyPI or any external Python package repository.
+
 The target OS must provide its normal system Python ${PYTHON_MM} and python3-venv
 package. If those OS packages are managed offline, obtain them from the approved
 internal Ubuntu repository/media before deployment.
@@ -157,8 +167,8 @@ Alternative manual installation:
   PIP_NO_INDEX=1 bash scripts/install_offline.sh
   .venv/bin/python main.py --create-user <username> --role admin
 
-The offline installer uses only the local wheels/ directory. ZIP/TAR/GZ/BZ2/XZ
-work without 7-Zip. .7z/.rar require a bundled or locally installed 7-Zip binary.
+The offline installer uses only dependency/wheels/. ZIP/TAR/GZ/BZ2/XZ work
+without 7-Zip. .7z/.rar require a bundled or locally installed 7-Zip binary.
 EOF
 
 mkdir -p "$DIST"
@@ -168,5 +178,7 @@ sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
 echo
 echo "Offline bundle created:"
 echo "  $ARCHIVE"
+echo "Dependencies:"
+echo "  $STAGE/dependency/wheels"
 echo "Checksum:"
 cat "$ARCHIVE.sha256"
