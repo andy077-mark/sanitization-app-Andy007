@@ -1,4 +1,9 @@
-\b(?:\d{1,3}\.){3}\d{1,3}\b                        # IP addresses
+# IPv4 addresses.
+# This rule only accepts valid 0-255 octets and deliberately skips common
+# version/build labels so values such as version=1.2.3.4 are not masked.
+# A bare value such as 1.2.3.4 is syntactically indistinguishable from an IPv4
+# address and is therefore still masked for safety.
+(?#ipv4)(?<!version=)(?<!version:)(?<!version )(?<!ver=)(?<!ver:)(?<!ver )(?<!build=)(?<!build:)(?<!build )(?<!release=)(?<!release:)(?<!release )(?<!firmware=)(?<!firmware:)(?<!firmware )(?<!fw=)(?<!fw:)(?<!fw )(?<!v)\b(?:(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)\b
 \b[\w\.-]+@(?:company\.com|company\.org)\b         # Emails from company.com or company.org
 \b(?: company\.com|company\.org)\b                 # The domains themselves
 \bWindows\b                                        # Key Word
