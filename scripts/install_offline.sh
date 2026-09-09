@@ -4,8 +4,18 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-if [[ ! -d wheels ]]; then
-  echo "ERROR: wheels/ directory not found. Use the prepared offline bundle." >&2
+DEPENDENCY_DIR="$ROOT/dependency"
+WHEEL_DIR="$DEPENDENCY_DIR/wheels"
+CHECKSUM_FILE="$DEPENDENCY_DIR/WHEELS_SHA256SUMS.txt"
+
+# Backward compatibility for older offline bundles that used root-level wheels/.
+if [[ ! -d "$WHEEL_DIR" && -d "$ROOT/wheels" ]]; then
+  WHEEL_DIR="$ROOT/wheels"
+  CHECKSUM_FILE="$ROOT/WHEELS_SHA256SUMS.txt"
+fi
+
+if [[ ! -d "$WHEEL_DIR" ]]; then
+  echo "ERROR: dependency/wheels/ directory not found. Use the prepared offline bundle." >&2
   exit 1
 fi
 if [[ ! -f requirements-lock.txt ]]; then
@@ -19,7 +29,6 @@ fi
 
 python3 - "$ROOT/RUNTIME_MANIFEST.json" <<'PY'
 import json
-import os
 import platform
 import sys
 from pathlib import Path
@@ -65,9 +74,9 @@ print(
 )
 PY
 
-if [[ -f WHEELS_SHA256SUMS.txt ]]; then
-  echo "Verifying bundled wheel checksums..."
-  (cd wheels && sha256sum -c ../WHEELS_SHA256SUMS.txt)
+if [[ -f "$CHECKSUM_FILE" ]]; then
+  echo "Verifying bundled dependency checksums..."
+  (cd "$WHEEL_DIR" && sha256sum -c "$CHECKSUM_FILE")
 fi
 
 python3 - <<'PY'
@@ -90,13 +99,14 @@ rm -rf .venv
 python3 -m venv .venv
 PIP_NO_INDEX=1 "$ROOT/.venv/bin/python" -m pip install \
   --no-index \
-  --find-links="$ROOT/wheels" \
+  --find-links="$WHEEL_DIR" \
   -r "$ROOT/requirements-lock.txt"
 
 "$ROOT/.venv/bin/python" "$ROOT/scripts/verify_environment.py"
 
 echo
 echo "Offline installation completed successfully."
+echo "Dependencies were installed from: $WHEEL_DIR"
 echo "No Python package was downloaded from the internet."
 echo "Before production startup, create an administrator:"
 echo "  .venv/bin/python main.py --create-user <username> --role admin"
