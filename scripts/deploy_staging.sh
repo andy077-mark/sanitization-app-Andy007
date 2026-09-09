@@ -17,16 +17,16 @@ Usage: sudo bash scripts/deploy_staging.sh [options]
 
 Options:
   --online                Allow pip to install from configured package indexes
-                          when a local wheels/ directory is not present.
+                          when dependency/wheels/ is not present.
   --admin USERNAME        Create the first administrator during deployment.
                           Password is prompted securely and is never put on the
                           command line or written to the environment file.
   --app-dir PATH          Installation directory (default: /opt/sanitization-app)
   --help                  Show this help.
 
-Secure default: if wheels/ exists, installation is offline with --no-index.
-Without wheels/, the script refuses network package access unless --online is
-explicitly supplied.
+Secure default: if dependency/wheels/ exists, installation is offline with
+--no-index. Without the local dependency wheelhouse, the script refuses network
+package access unless --online is explicitly supplied.
 EOF
 }
 
@@ -74,7 +74,7 @@ fi
 
 # If this is an OS-specific offline release, reject the wrong bundle before any
 # application state is changed. Development/source deployments have no manifest.
-if [[ -f "$SOURCE_DIR/scripts/check_bundle_compatibility.py" ]]; then
+if [[ -f "$SOURCE_DIR/scripts/check_bundle_compatibility.py" && -f "$SOURCE_DIR/RUNTIME_MANIFEST.json" ]]; then
   python3 "$SOURCE_DIR/scripts/check_bundle_compatibility.py" "$SOURCE_DIR/RUNTIME_MANIFEST.json"
 fi
 
@@ -93,19 +93,20 @@ if systemctl list-unit-files "$SERVICE_NAME.service" >/dev/null 2>&1; then
 fi
 
 # Preserve runtime state on upgrades. Copy application code/configuration only.
-for entry in main.py wsgi.py bad_words.txt requirements.txt requirements-lock.txt RUNTIME_MANIFEST.json README.md DEPLOYMENT.md PERFORMANCE_BENCHMARK.md OS_COMPATIBILITY_REVIEW.md gunicorn.conf.py templates sanitization_v2 scripts deploy tools; do
+for entry in main.py wsgi.py bad_words.txt requirements.txt requirements-lock.txt RUNTIME_MANIFEST.json README.md DEPLOYMENT.md PERFORMANCE_BENCHMARK.md OS_COMPATIBILITY_REVIEW.md SOP.md gunicorn.conf.py templates sanitization_v2 scripts deploy tools dependency; do
   [[ -e "$SOURCE_DIR/$entry" ]] || continue
   rm -rf "$APP_DIR/$entry"
   cp -a "$SOURCE_DIR/$entry" "$APP_DIR/$entry"
 done
 
-# Copy an offline wheelhouse when supplied in a release bundle.
-if [[ -d "$SOURCE_DIR/wheels" ]]; then
-  rm -rf "$APP_DIR/wheels"
-  cp -a "$SOURCE_DIR/wheels" "$APP_DIR/wheels"
-fi
-if [[ -f "$SOURCE_DIR/WHEELS_SHA256SUMS.txt" ]]; then
-  cp "$SOURCE_DIR/WHEELS_SHA256SUMS.txt" "$APP_DIR/WHEELS_SHA256SUMS.txt"
+# Backward compatibility for older release bundles that stored wheels at root.
+if [[ ! -d "$APP_DIR/dependency/wheels" && -d "$SOURCE_DIR/wheels" ]]; then
+  mkdir -p "$APP_DIR/dependency"
+  rm -rf "$APP_DIR/dependency/wheels"
+  cp -a "$SOURCE_DIR/wheels" "$APP_DIR/dependency/wheels"
+  if [[ -f "$SOURCE_DIR/WHEELS_SHA256SUMS.txt" ]]; then
+    cp "$SOURCE_DIR/WHEELS_SHA256SUMS.txt" "$APP_DIR/dependency/WHEELS_SHA256SUMS.txt"
+  fi
 fi
 
 mkdir -p "$APP_DIR"/{uploads,outputs,logs,temp,data,certs}
@@ -115,28 +116,36 @@ chmod 0700 "$APP_DIR"/{uploads,outputs,logs,temp,data,certs}
 
 # Validate the installed copy again so an OS upgrade or mismatched bundle is
 # reported explicitly before the virtual environment is rebuilt.
-python3 "$APP_DIR/scripts/check_bundle_compatibility.py" "$APP_DIR/RUNTIME_MANIFEST.json"
+if [[ -f "$APP_DIR/RUNTIME_MANIFEST.json" ]]; then
+  python3 "$APP_DIR/scripts/check_bundle_compatibility.py" "$APP_DIR/RUNTIME_MANIFEST.json"
+fi
 
-REQ_FILE="$APP_DIR/requirements-lock.txt"
+REQ_FILE="$APP_DIR/dependency/requirements-lock.txt"
+if [[ ! -f "$REQ_FILE" ]]; then
+  REQ_FILE="$APP_DIR/requirements-lock.txt"
+fi
 if [[ ! -f "$REQ_FILE" ]]; then
   REQ_FILE="$APP_DIR/requirements.txt"
 fi
 
+WHEEL_DIR="$APP_DIR/dependency/wheels"
+CHECKSUM_FILE="$APP_DIR/dependency/WHEELS_SHA256SUMS.txt"
+
 rm -rf "$APP_DIR/.venv"
 python3 -m venv "$APP_DIR/.venv"
 
-if [[ -d "$APP_DIR/wheels" ]]; then
-  echo "Installing Python packages from local offline wheelhouse..."
-  if [[ -f "$APP_DIR/WHEELS_SHA256SUMS.txt" ]]; then
-    (cd "$APP_DIR/wheels" && sha256sum -c ../WHEELS_SHA256SUMS.txt)
+if [[ -d "$WHEEL_DIR" ]]; then
+  echo "Installing Python packages from local dependency/wheels/..."
+  if [[ -f "$CHECKSUM_FILE" ]]; then
+    (cd "$WHEEL_DIR" && sha256sum -c "$CHECKSUM_FILE")
   fi
-  PIP_NO_INDEX=1 "$APP_DIR/.venv/bin/python" -m pip install --no-index --find-links="$APP_DIR/wheels" -r "$REQ_FILE"
+  PIP_NO_INDEX=1 "$APP_DIR/.venv/bin/python" -m pip install --no-index --find-links="$WHEEL_DIR" -r "$REQ_FILE"
 elif [[ "$ALLOW_ONLINE" -eq 1 ]]; then
   echo "Installing Python packages from configured package indexes (--online explicitly enabled)..."
   "$APP_DIR/.venv/bin/python" -m pip install -r "$REQ_FILE"
 else
   cat >&2 <<EOF
-ERROR: no local wheels/ directory was found.
+ERROR: no local dependency/wheels/ directory was found.
 For an air-gapped installation, deploy the tested offline artifact.
 For an internet-connected staging VM only, rerun with --online.
 EOF
@@ -225,9 +234,10 @@ echo
 echo "============================================================"
 echo "SOC Data Sanitization Platform staging deployment: SUCCESS"
 echo "============================================================"
-echo "Application: $APP_DIR"
-echo "Service:     $SERVICE_NAME.service"
-echo "Health:      https://127.0.0.1:8443/healthz"
+echo "Application:  $APP_DIR"
+echo "Dependencies: $WHEEL_DIR"
+echo "Service:      $SERVICE_NAME.service"
+echo "Health:       https://127.0.0.1:8443/healthz"
 echo
 echo "Next: run the browser/API acceptance checker as an Admin and Analyst:"
 echo "  $APP_DIR/.venv/bin/python $APP_DIR/scripts/staging_acceptance.py --url https://127.0.0.1:8443 --username <user> --role admin"
