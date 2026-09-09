@@ -16,7 +16,7 @@ See `OS_COMPATIBILITY_REVIEW.md` for the Ubuntu 22.04 -> 24.04 incident investig
 
 **Never reuse the application's existing `.venv` across an Ubuntu release upgrade.**
 
-Ubuntu 22.04 and Ubuntu 24.04 use different system Python minor versions. A virtual environment built with Python 3.10 must not be treated as a valid Python 3.12 environment after the OS upgrade.
+Ubuntu releases can use different system Python minor versions. A virtual environment built for the previous Ubuntu/Python combination must not be treated as valid after an OS upgrade.
 
 After an OS upgrade, deploy the offline release built for the new Ubuntu/Python/CPU target. The deployment process deletes and rebuilds `.venv` from the local release wheelhouse.
 
@@ -32,7 +32,7 @@ SanitizationApp-v2.1-Ubuntu26.04-Python3.14-x86_64-offline.tar.gz
 
 Each bundle contains:
 
-- application source/templates,
+- application source, templates and local static UI assets,
 - `requirements-lock.txt` with the complete direct + transitive runtime chain,
 - all Python wheels required by that target,
 - `WHEELS_SHA256SUMS.txt`,
@@ -56,7 +56,9 @@ PIP_NO_INDEX=1
 --find-links=<local wheels directory>
 ```
 
-No Python package is downloaded from PyPI or another external package repository during offline installation. The application does not download packages or executables during startup or runtime.
+No Python package is downloaded from PyPI or another Python repository during offline installation. The application does not download packages, executables, fonts, JavaScript frameworks, analytics components or sanitization components during startup or runtime.
+
+The UI uses local templates, CSS and JavaScript only.
 
 The host must already provide its normal Ubuntu system `python3`, matching `python3-venv`, and systemd. In an air-gapped environment those OS components must be supplied by approved internal/offline Ubuntu media. Optional 7-Zip is needed only for `.7z`, `.rar` and related specialist formats; ZIP/TAR/GZ/BZ2/XZ use Python's standard library.
 
@@ -76,9 +78,58 @@ An approved connected build/CI host may access package repositories to collect w
 - TLS certificate/key readiness,
 - optional 7-Zip availability,
 - disk space,
-- release manifest compatibility when present.
+- release manifest compatibility when present,
+- required production templates and static UI assets.
 
-A missing or mismatched dependency causes startup preflight failure.
+A missing or mismatched dependency or required production asset causes startup preflight failure.
+
+## Current application UI and routes
+
+The production interface includes:
+
+- **Dashboard** - job KPIs, current job status, quick actions and live Server & Runtime Overview.
+- **Sanitize Files** - file/folder selection, drag-and-drop, progress and result downloads.
+- **Reports / History** - persistent job history, search, refresh, JSON export and output/report downloads.
+- **Rules Library (Admin)** - add, edit, delete, save, clear and replace rules.
+- **User Management (Admin)** - create Analyst/Admin users, enable/disable accounts and reset passwords.
+- **Application Logs (Admin)** - read recent local `processing.log` entries.
+- **About / System** - live runtime and compatibility information.
+
+Important UI/runtime files:
+
+```text
+templates/index.html
+templates/login.html
+sanitization_v2/static/theme.css
+sanitization_v2/static/login.css
+sanitization_v2/static/dashboard.js
+sanitization_v2/ui_extension.py
+```
+
+The live Server & Runtime Overview is detected from the actual host and reports values including hostname, Ubuntu/platform, Python version, CPU model, logical CPUs, memory, free disk and disk utilization.
+
+Relevant authenticated endpoints include:
+
+```text
+/health
+/system-info
+/rules/status
+/jobs
+```
+
+Administrator-only endpoints include:
+
+```text
+/admin/users
+/admin/users/create
+/admin/users/toggle
+/admin/users/reset-password
+/admin/logs
+/bad_words
+/rules/*
+```
+
+These endpoints are protected server-side by authentication/RBAC; UI visibility is not the security boundary.
 
 ## Access model
 
@@ -90,10 +141,17 @@ A missing or mismatched dependency causes startup preflight failure.
 - Monitor jobs and history
 - Download sanitized output and Excel reports
 - View active-rule count
+- View live system/runtime information
 
 ### Administrator
 
-Includes Analyst capabilities plus Rules Library administration.
+Includes all Analyst capabilities plus:
+
+- Rules Library administration
+- Create Analyst/Admin users
+- Enable/disable users
+- Reset local user passwords
+- View recent local application logs
 
 ## Supported sanitization content
 
@@ -153,7 +211,7 @@ PIP_NO_INDEX=1 bash scripts/install_offline.sh
 
 This validates the bundle/host combination, verifies wheel SHA-256 checksums, rebuilds `.venv`, installs from local wheels only and runs environment verification.
 
-## Bootstrap accounts
+## Bootstrap and user administration
 
 Create an administrator interactively:
 
@@ -169,7 +227,29 @@ sudo -u sanitizer /opt/sanitization-app/.venv/bin/python \
   /opt/sanitization-app/main.py --create-user analyst01 --role analyst
 ```
 
-Passwords are entered interactively and are never placed on the command line.
+List users:
+
+```bash
+sudo -u sanitizer /opt/sanitization-app/.venv/bin/python \
+  /opt/sanitization-app/main.py --list-users
+```
+
+Reset, disable or enable an account from CLI when needed:
+
+```bash
+sudo -u sanitizer /opt/sanitization-app/.venv/bin/python \
+  /opt/sanitization-app/main.py --reset-password analyst01
+
+sudo -u sanitizer /opt/sanitization-app/.venv/bin/python \
+  /opt/sanitization-app/main.py --disable-user analyst01
+
+sudo -u sanitizer /opt/sanitization-app/.venv/bin/python \
+  /opt/sanitization-app/main.py --enable-user analyst01
+```
+
+Equivalent day-to-day user administration is also available to Administrators through the web UI.
+
+Passwords are entered interactively or through the protected Admin UI and are never returned by the API or stored in plaintext.
 
 ## Production service
 
@@ -224,7 +304,7 @@ SANIT_TLS_KEY=/path/to/approved/server.key
 
 Restrict TCP/8443 to approved SOC/admin networks.
 
-## Health and logs
+## Health and system information
 
 Check the service:
 
@@ -232,7 +312,7 @@ Check the service:
 sudo systemctl status sanitization-app --no-pager
 ```
 
-Browser/API health endpoint:
+Minimal unauthenticated service probe:
 
 ```text
 https://127.0.0.1:8443/healthz
@@ -244,12 +324,31 @@ Expected response:
 {"status":"ok"}
 ```
 
-Application/service logs:
+Authenticated operational health and runtime information are available through:
+
+```text
+/health
+/system-info
+```
+
+The dashboard uses these endpoints to populate the live Server & Runtime Overview.
+
+## Application and service logs
+
+Systemd/Gunicorn logs:
 
 ```bash
 sudo journalctl -u sanitization-app -n 200 --no-pager
 sudo journalctl -u sanitization-app -f
 ```
+
+Application processing log:
+
+```text
+/opt/sanitization-app/logs/processing.log
+```
+
+Administrators can also view recent `processing.log` entries in the **Application Logs** page of the web UI.
 
 ## Staging acceptance
 
@@ -266,6 +365,25 @@ Run the supplied acceptance checker separately with an Administrator and Analyst
 ```
 
 Also manually verify representative `.log`, `.csv`, `.xlsx`, text-based `.pdf`, `.docx`, direct single-file output, folder/batch output, Excel report, and unsupported scanned/image content fail-closed behavior.
+
+### UI acceptance checks
+
+Before go-live, verify that all current controls operate correctly:
+
+- Login and Sign Out
+- Dashboard navigation
+- Sanitize Files / Choose Files / Choose Folder
+- Clear Selection / Start Sanitization
+- Sanitized Output download
+- Excel Audit Report download
+- Reports/History refresh, search and JSON export
+- Rules Library add/edit/delete/save/clear/replace actions for Admin
+- User Management create/enable/disable/reset-password actions for Admin
+- Application Logs refresh for Admin
+- Server & Runtime Overview refresh
+- Analyst cannot access Admin-only endpoints or controls
+
+Confirm that the dashboard displays the actual target server information, for example the expected hostname, Ubuntu 24.04, Python 3.12.x, CPU details, logical CPUs, memory and disk utilization on the Ubuntu 24.04 target.
 
 ## Performance baseline
 
@@ -298,7 +416,7 @@ See `PERFORMANCE_BENCHMARK.md`.
 7. Let deployment rebuild `.venv` from the bundled wheelhouse.
 8. Run `scripts/verify_environment.py`.
 9. Run Admin and Analyst staging acceptance.
-10. Validate systemd, `/healthz`, representative sanitization and performance as appropriate.
+10. Validate systemd, `/healthz`, `/health`, `/system-info`, representative sanitization and performance as appropriate.
 
 ## Evidence to capture before rollback if an upgrade fails
 
@@ -320,6 +438,16 @@ Capture these records before rolling back so a future incident can be proven rat
 ## Security hardening
 
 The supplied systemd unit uses restricted runtime permissions and controls including `NoNewPrivileges`, `PrivateTmp`, `PrivateDevices`, `ProtectSystem`, `ProtectHome`, kernel/control-group protection, SUID/SGID restriction and `UMask=0077`.
+
+Additional production requirements:
+
+- restrict TCP/8443 to approved SOC/admin networks,
+- use an approved internal CA certificate,
+- protect `/etc/sanitization-app/sanitization.env`, TLS private keys and application runtime data,
+- never store credentials or sensitive SOC evidence in the repository,
+- keep `SANIT_GUNICORN_WORKERS=1` for v2.1,
+- use the offline release package rather than `--online` for production,
+- do not treat unsupported image/scanned content as sanitized.
 
 ## Remaining enterprise enhancements
 
